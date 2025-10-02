@@ -13,12 +13,32 @@ def normalize_text(val):
     return re.sub(r"\s+", "", str(val)).strip().lower()
 
 def parse_number(val):
+    """Interpreta números siguiendo la regla: '.' es separador decimal y ',' separador de miles.
+    Ejemplos válidos: '1,234.56' -> 1234.56; '1234.56' -> 1234.56; '1.234' -> 1.234 (punto decimal);
+    '1,234' -> 1234 (coma como separador de miles); '1234' -> 1234.
+    También maneja espacios y valores vacíos."""
     try:
+        if val is None:
+            return np.nan
         s = str(val).strip()
         if s == "" or s.lower() in {"nan", "none"}:
             return np.nan
-        s = s.replace(".", "").replace(",", ".")
-        return float(s)
+        # Eliminar espacios intermedios
+        s = re.sub(r"\s+", "", s)
+        # Si hay al menos un punto, lo tratamos como decimal.
+        # Eliminamos las comas que actúan como separador de miles.
+        if "." in s:
+            s = s.replace(",", "")  # coma = miles -> eliminar
+            # ahora s tiene punto(s). Si hay múltiples puntos, solo el último se considera decimal:
+            if s.count(".") > 1:
+                # unir los posibles miles con puntos y dejar último como decimal: 1.234.567.89 -> 1234567.89
+                parts = s.split(".")
+                s = "".join(parts[:-1]) + "." + parts[-1]
+            return float(s)
+        else:
+            # No hay punto. Las comas se consideran separador de miles -> eliminar y parsear entero
+            s = s.replace(",", "")
+            return float(s)
     except:
         return np.nan
 
@@ -95,6 +115,7 @@ if uploaded_files:
                 error_log.append(f"❌ Columna M no encontrada en {file.name}")
             else:
                 try:
+                    # Aplicar parse_number que interpreta '.' como decimal y ',' como miles
                     df["_M_num"] = df[col_M].apply(parse_number)
                     filtered = df[df["_M_num"] >= threshold]
                     extract_letters = ["B", "C", "D", "L", "M"]
@@ -122,7 +143,6 @@ if uploaded_files:
                 error_log.append(f"❌ Columnas B o C faltantes en {file.name}")
             else:
                 try:
-                    # Crear columnas estandarizadas para reporte de validación sin alterar df original
                     df["_tipo_doc"] = df[col_B].astype(str).apply(lambda x: safe_str_preserve(x).strip().upper())
                     df["_num_doc"] = df[col_C].astype(str).apply(lambda x: safe_str_preserve(x).strip())
 
@@ -150,7 +170,6 @@ if uploaded_files:
                     df["_Error_validacion"] = df.apply(lambda r: validate_row_std(r["_tipo_doc"], r["_num_doc"]), axis=1)
                     errores = df[df["_Error_validacion"].notna()].copy()
                     if not errores.empty:
-                        # Normalizar columnas de reporte para que todas las entradas en validation_report tengan las mismas columnas
                         report = pd.DataFrame({
                             "TipoDocumento": errores["_tipo_doc"].values,
                             "Documento": errores["_num_doc"].values,
