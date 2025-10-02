@@ -44,11 +44,11 @@ col_left, col_center, col_right = st.columns([1, 2, 1])
 with col_center:
     uploaded_files = st.file_uploader("📁 Suba uno o varios archivos Excel", type=["xlsx"], accept_multiple_files=True)
 
-# Preparar contenedores de salida para que siempre existan en la UI
+# Preparar contenedores de salida (orden: coincidencias primero)
+matches_container = st.container()
 duplicates_container = st.container()
 threshold_container = st.container()
 validation_container = st.container()
-matches_container = st.container()
 errors_container = st.container()
 
 if uploaded_files:
@@ -76,19 +76,18 @@ if uploaded_files:
                     return None
 
             # Subtítulo 1: búsqueda en todo el archivo
-            norm = df.applymap(lambda x: normalize_text(x))
             if search_term:
+                norm = df.applymap(lambda x: normalize_text(x))
                 target = normalize_text(search_term)
                 found_mask = norm.isin([target])
                 match_rows = df[found_mask.any(axis=1)].copy()
             else:
-                match_rows = pd.DataFrame()  # vacío si no se buscó
-
+                match_rows = pd.DataFrame()
             if not match_rows.empty:
                 match_rows["Archivo"] = file.name
                 matches_report.append(match_rows)
 
-            # Subtítulo 2: duplicados completos en C, D, I, M, R, S
+            # Subtítulo 2: duplicados solo si coinciden todas las columnas C, D, I, M, R, S simultáneamente
             dup_letters = ["C", "D", "I", "M", "R", "S"]
             dup_cols = []
             missing_dup = []
@@ -109,7 +108,7 @@ if uploaded_files:
                     dups_report["Columnas comprobadas"] = ",".join(dup_letters)
                     duplicates_report.append(dups_report)
 
-            # Subtítulo 3: threshold en M y extracción B,C,D,L,M (parseando M según regla . decimal, , miles)
+            # Subtítulo 3: threshold en M y extracción B,C,D,L,M
             col_M = get_col_by_letter("M")
             if col_M is None:
                 error_log.append(f"❌ Columna M no encontrada en {file.name}")
@@ -182,16 +181,7 @@ if uploaded_files:
         except Exception as e:
             error_log.append(f"❌ Error procesando {file.name}: {e}")
 
-    # Sección Errores (si no hay, igualmente se muestra)
-    with errors_container:
-        st.subheader("🚨 Errores detectados")
-        if error_log:
-            for err in error_log:
-                st.error(err)
-        else:
-            st.info("No se detectaron errores de procesamiento.")
-
-    # Sección Coincidencias (Subtítulo 1)
+    # Sección Coincidencias (ahora primera)
     with matches_container:
         st.subheader("📌 Coincidencias de búsqueda")
         if matches_report:
@@ -204,7 +194,7 @@ if uploaded_files:
         else:
             st.info("No se realizaron búsquedas o no se encontraron coincidencias.")
 
-    # Sección Duplicados (Subtítulo 2)
+    # Sección Duplicados
     with duplicates_container:
         st.subheader("📋 Duplicados detectados (C, D, I, M, R, S)")
         if duplicates_report:
@@ -217,7 +207,7 @@ if uploaded_files:
         else:
             st.info("No se encontraron duplicados completos en C, D, I, M, R, S.")
 
-    # Sección Threshold (Subtítulo 3)
+    # Sección Threshold
     with threshold_container:
         st.subheader("📈 Filas con M >= threshold")
         if threshold_report:
@@ -230,7 +220,7 @@ if uploaded_files:
         else:
             st.info("No se encontraron filas que cumplan el threshold en las columnas M procesadas.")
 
-    # Sección Validaciones B/C (Subtítulo 4)
+    # Sección Validaciones B/C
     with validation_container:
         st.subheader("🧪 Validaciones de formato B/C (solo errores)")
         if validation_report:
@@ -242,11 +232,17 @@ if uploaded_files:
             st.download_button("⬇️ Descargar errores de validación", data=buf.getvalue(), file_name="errores_validacion.xlsx")
         else:
             st.info("No se detectaron errores de validación B/C.")
-else:
-    # No hay archivos subidos: mostrar todas las secciones vacías
+
+    # Sección Errores (al final)
     with errors_container:
         st.subheader("🚨 Errores detectados")
-        st.info("No se detectaron errores de procesamiento.")
+        if error_log:
+            for err in error_log:
+                st.error(err)
+        else:
+            st.info("No se detectaron errores de procesamiento.")
+else:
+    # No hay archivos subidos: mostrar todas las secciones vacías (coincidencias primero)
     with matches_container:
         st.subheader("📌 Coincidencias de búsqueda")
         st.info("Sube archivos y realiza una búsqueda para ver coincidencias.")
@@ -259,3 +255,6 @@ else:
     with validation_container:
         st.subheader("🧪 Validaciones de formato B/C (solo errores)")
         st.info("Sube archivos para ejecutar las validaciones B/C.")
+    with errors_container:
+        st.subheader("🚨 Errores detectados")
+        st.info("No se detectaron errores de procesamiento.")
