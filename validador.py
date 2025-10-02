@@ -13,30 +13,20 @@ def normalize_text(val):
     return re.sub(r"\s+", "", str(val)).strip().lower()
 
 def parse_number(val):
-    """Interpreta números siguiendo la regla: '.' es separador decimal y ',' separador de miles.
-    Ejemplos válidos: '1,234.56' -> 1234.56; '1234.56' -> 1234.56; '1.234' -> 1.234 (punto decimal);
-    '1,234' -> 1234 (coma como separador de miles); '1234' -> 1234.
-    También maneja espacios y valores vacíos."""
     try:
         if val is None:
             return np.nan
         s = str(val).strip()
         if s == "" or s.lower() in {"nan", "none"}:
             return np.nan
-        # Eliminar espacios intermedios
         s = re.sub(r"\s+", "", s)
-        # Si hay al menos un punto, lo tratamos como decimal.
-        # Eliminamos las comas que actúan como separador de miles.
         if "." in s:
-            s = s.replace(",", "")  # coma = miles -> eliminar
-            # ahora s tiene punto(s). Si hay múltiples puntos, solo el último se considera decimal:
+            s = s.replace(",", "")
             if s.count(".") > 1:
-                # unir los posibles miles con puntos y dejar último como decimal: 1.234.567.89 -> 1234567.89
                 parts = s.split(".")
                 s = "".join(parts[:-1]) + "." + parts[-1]
             return float(s)
         else:
-            # No hay punto. Las comas se consideran separador de miles -> eliminar y parsear entero
             s = s.replace(",", "")
             return float(s)
     except:
@@ -93,8 +83,9 @@ if uploaded_files:
                 else:
                     st.info(f"No se encontraron coincidencias en {file.name}.")
 
-            # Subtítulo 2: duplicados en M, I, C
-            for letter in ["M", "I", "C"]:
+            # Subtítulo 2: duplicados en C, D, I, M, R, S (por posición)
+            dup_letters = ["C", "D", "I", "M", "R", "S"]
+            for letter in dup_letters:
                 colname = get_col_by_letter(letter)
                 if colname is None:
                     error_log.append(f"❌ Columna {letter} no encontrada en {file.name}")
@@ -115,7 +106,6 @@ if uploaded_files:
                 error_log.append(f"❌ Columna M no encontrada en {file.name}")
             else:
                 try:
-                    # Aplicar parse_number que interpreta '.' como decimal y ',' como miles
                     df["_M_num"] = df[col_M].apply(parse_number)
                     filtered = df[df["_M_num"] >= threshold]
                     extract_letters = ["B", "C", "D", "L", "M"]
@@ -198,6 +188,9 @@ if uploaded_files:
         with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
             dup_df.to_excel(writer, index=False, sheet_name="duplicados")
         st.download_button("⬇️ Descargar duplicados", data=buf.getvalue(), file_name="duplicados.xlsx")
+    else:
+        st.subheader("📋 Duplicados detectados")
+        st.info("No se encontraron duplicados en C, D, I, M, R, S en los archivos procesados.")
 
     # Threshold
     if threshold_report:
@@ -208,6 +201,9 @@ if uploaded_files:
         with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
             th_df.to_excel(writer, index=False, sheet_name="filtrados_threshold")
         st.download_button("⬇️ Descargar filtrados por threshold", data=buf.getvalue(), file_name="filtrados_threshold.xlsx")
+    else:
+        st.subheader("📈 Filas con M >= threshold")
+        st.info("No se encontraron filas que cumplan el threshold en las columnas M procesadas.")
 
     # Validaciones B/C (sección garantizada)
     st.subheader("🧪 Validaciones de formato B/C (solo errores)")
