@@ -39,7 +39,7 @@ def safe_str_preserve(val):
     s = re.sub(r"\.0+$", "", s)
     return s
 
-# Layout centrado para uploader y controles
+# Layout centrado para uploader
 col_left, col_center, col_right = st.columns([1, 2, 1])
 with col_center:
     uploaded_files = st.file_uploader("📁 Suba uno o varios archivos Excel", type=["xlsx"], accept_multiple_files=True)
@@ -51,17 +51,19 @@ threshold_container = st.container()
 validation_container = st.container()
 errors_container = st.container()
 
+# Variables para acumulación
+error_log = []
+duplicates_report = []
+threshold_report = []
+validation_report = []
+matches_report = []
+
 if uploaded_files:
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
+    # Mostrar caja de búsqueda y threshold SOLO después de subir archivos, centradas
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
         search_term = st.text_input("🔍 Ingrese texto o número a buscar (coincidencia exacta, sin espacios)")
         threshold = st.number_input("⚙️ Umbral para columna M (ej. 30000)", min_value=0, value=30000)
-
-    error_log = []
-    duplicates_report = []
-    threshold_report = []
-    validation_report = []
-    matches_report = []
 
     for file in uploaded_files:
         try:
@@ -75,7 +77,7 @@ if uploaded_files:
                 except:
                     return None
 
-            # Subtítulo 1: búsqueda en todo el archivo
+            # Subtítulo 1: búsqueda en todo el archivo (si hubo término)
             if search_term:
                 norm = df.applymap(lambda x: normalize_text(x))
                 target = normalize_text(search_term)
@@ -87,7 +89,7 @@ if uploaded_files:
                 match_rows["Archivo"] = file.name
                 matches_report.append(match_rows)
 
-            # Subtítulo 2: duplicados solo si coinciden todas las columnas C, D, I, M, R, S simultáneamente
+            # Subtítulo 2: duplicados completos en C, D, I, M, R, S
             dup_letters = ["C", "D", "I", "M", "R", "S"]
             dup_cols = []
             missing_dup = []
@@ -181,7 +183,7 @@ if uploaded_files:
         except Exception as e:
             error_log.append(f"❌ Error procesando {file.name}: {e}")
 
-    # Sección Coincidencias (ahora primera)
+    # Sección Coincidencias (primera)
     with matches_container:
         st.subheader("📌 Coincidencias de búsqueda")
         if matches_report:
@@ -241,6 +243,7 @@ if uploaded_files:
                 st.error(err)
         else:
             st.info("No se detectaron errores de procesamiento.")
+
 else:
     # No hay archivos subidos: mostrar todas las secciones vacías (coincidencias primero)
     with matches_container:
