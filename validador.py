@@ -4,8 +4,8 @@ import numpy as np
 import io
 import re
 
-st.set_page_config(page_title="Validador Excel", layout="wide")
-st.title("📊 Validador y Analizador de Archivos Excel")
+st.set_page_config(page_title="Validador Excel", layout="centered")
+st.title("📊 Validador y Analizador de Archivos Excel", anchor=None)
 
 def normalize_text(val):
     if pd.isna(val):
@@ -15,18 +15,35 @@ def normalize_text(val):
 def parse_number(val):
     try:
         s = str(val).strip()
-        if s == "":
+        if s == "" or s.lower() in {"nan", "none"}:
             return np.nan
+        # Normalizar formato regional: miles con punto, decimales con coma
         s = s.replace(".", "").replace(",", ".")
         return float(s)
     except:
         return np.nan
 
-uploaded_files = st.file_uploader("📁 Suba uno o varios archivos Excel", type=["xlsx"], accept_multiple_files=True)
+def safe_str_preserve(val):
+    """Convierte a string conservando ceros a la izquierda cuando vienen como texto.
+    Si el valor viene como '12345.0' (numeric leído como str), elimina el .0 final."""
+    if pd.isna(val):
+        return ""
+    s = str(val)
+    # elimina .0 final frecuente cuando Excel exporta números
+    s = re.sub(r"\.0+$", "", s)
+    return s
+
+# Centrar uploader y controles usando columnas
+col_left, col_center, col_right = st.columns([1, 2, 1])
+with col_center:
+    uploaded_files = st.file_uploader("📁 Suba uno o varios archivos Excel", type=["xlsx"], accept_multiple_files=True)
 
 if uploaded_files:
-    search_term = st.text_input("🔍 Ingrese texto o número a buscar (coincidencia exacta, sin espacios)")
-    threshold = st.number_input("⚙️ Umbral para columna M (ej. 30000)", min_value=0, value=30000)
+    # Centrar inputs
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        search_term = st.text_input("🔍 Ingrese texto o número a buscar (coincidencia exacta, sin espacios)")
+        threshold = st.number_input("⚙️ Umbral para columna M (ej. 30000)", min_value=0, value=30000)
 
     all_data = []
     error_log = []
@@ -36,7 +53,8 @@ if uploaded_files:
 
     for file in uploaded_files:
         try:
-            df = pd.read_excel(file, header=0)
+            # Leer como texto para conservar ceros iniciales cuando existan en la celda
+            df = pd.read_excel(file, header=0, dtype=str)
             df_original = df.copy()
             df.columns = [str(col) for col in df.columns]
 
@@ -54,7 +72,7 @@ if uploaded_files:
                 else:
                     st.info(f"No se encontraron coincidencias en {file.name}.")
 
-            # Preparar lista de columnas por letra (por posición)
+            # Helper: obtener nombre de columna por letra (indexación por posición)
             def get_col_by_letter(letter):
                 try:
                     idx = ord(letter.upper()) - ord("A")
@@ -84,6 +102,7 @@ if uploaded_files:
                 error_log.append(f"❌ Columna M no encontrada en {file.name}")
             else:
                 try:
+                    # parse_number maneja strings con separadores regionales
                     df["_M_num"] = df[col_M].apply(parse_number)
                     filtered = df[df["_M_num"] >= threshold]
                     if not filtered.empty:
@@ -113,14 +132,16 @@ if uploaded_files:
             else:
                 try:
                     def validate_row(row):
-                        tipo = str(row[col_B]).strip().upper()
-                        valor_raw = str(row[col_C]).strip()
-                        # vacíos se consideran inválidos
-                        if valor_raw == "" or pd.isna(row[col_C]):
+                        tipo = safe_str_preserve(row[col_B]).strip().upper()
+                        valor_raw = safe_str_preserve(row[col_C]).strip()
+                        # vacíos se consideran inválidos si el tipo es uno de los esperados
+                        if valor_raw == "" or valor_raw.lower() in {"nan", "none"}:
                             if tipo in {"DNI", "CEX", "RUC"}:
                                 return f"{tipo} inválido - vacío"
                             return None
+                        # validar según tipo sin alterar el valor original
                         if tipo == "DNI":
+                            # DNI debe ser exactamente 8 dígitos; conservar ceros iniciales si existen
                             if not valor_raw.isdigit() or len(valor_raw) != 8:
                                 return "DNI inválido"
                             return None
@@ -178,7 +199,13 @@ if uploaded_files:
     if validation_report:
         st.subheader("🧪 Validaciones de formato B/C (solo errores)")
         val_df = pd.concat(validation_report, ignore_index=True)
-        display_cols = [c for c in val_df.columns if c in [col_B, col_C, "Error", "Archivo", "Tipo validación"]]
+        # mostrar columnas relevantes en orden seguro
+        display_cols = []
+        if col_B in val_df.columns:
+            display_cols.append(col_B)
+        if col_C in val_df.columns:
+            display_cols.append(col_C)
+        display_cols += ["Error", "Archivo", "Tipo validación"]
         st.dataframe(val_df[display_cols])
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
