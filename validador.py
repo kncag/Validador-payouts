@@ -5,7 +5,7 @@ import io
 import re
 
 st.set_page_config(page_title="Validador Excel", layout="centered")
-st.title("📊 Validador y Analizador de Archivos Excel", anchor=None)
+st.title("📊 Validador y Analizador de Archivos Excel")
 
 def normalize_text(val):
     if pd.isna(val):
@@ -17,19 +17,15 @@ def parse_number(val):
         s = str(val).strip()
         if s == "" or s.lower() in {"nan", "none"}:
             return np.nan
-        # Normalizar formato regional: miles con punto, decimales con coma
         s = s.replace(".", "").replace(",", ".")
         return float(s)
     except:
         return np.nan
 
 def safe_str_preserve(val):
-    """Convierte a string conservando ceros a la izquierda cuando vienen como texto.
-    Si el valor viene como '12345.0' (numeric leído como str), elimina el .0 final."""
     if pd.isna(val):
         return ""
     s = str(val)
-    # elimina .0 final frecuente cuando Excel exporta números
     s = re.sub(r"\.0+$", "", s)
     return s
 
@@ -39,13 +35,11 @@ with col_center:
     uploaded_files = st.file_uploader("📁 Suba uno o varios archivos Excel", type=["xlsx"], accept_multiple_files=True)
 
 if uploaded_files:
-    # Centrar inputs
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         search_term = st.text_input("🔍 Ingrese texto o número a buscar (coincidencia exacta, sin espacios)")
         threshold = st.number_input("⚙️ Umbral para columna M (ej. 30000)", min_value=0, value=30000)
 
-    all_data = []
     error_log = []
     duplicates_report = []
     threshold_report = []
@@ -53,24 +47,9 @@ if uploaded_files:
 
     for file in uploaded_files:
         try:
-            # Leer como texto para conservar ceros iniciales cuando existan en la celda
+            # Leer todo como string para preservar ceros iniciales
             df = pd.read_excel(file, header=0, dtype=str)
-            df_original = df.copy()
             df.columns = [str(col) for col in df.columns]
-
-            # Subtítulo 1: búsqueda de coincidencias exactas en todo el archivo
-            if search_term:
-                norm = df.applymap(lambda x: normalize_text(x))
-                target = normalize_text(search_term)
-                found_mask = norm.isin([target])
-                match_rows = df[found_mask.any(axis=1)]
-                if not match_rows.empty:
-                    match_rows_display = match_rows.copy()
-                    match_rows_display["Archivo"] = file.name
-                    st.subheader(f"📌 Coincidencias en archivo: {file.name}")
-                    st.dataframe(match_rows_display)
-                else:
-                    st.info(f"No se encontraron coincidencias en {file.name}.")
 
             # Helper: obtener nombre de columna por letra (indexación por posición)
             def get_col_by_letter(letter):
@@ -80,7 +59,21 @@ if uploaded_files:
                 except:
                     return None
 
-            # Subtítulo 2: detectar duplicados en columnas M, I, C
+            # Subtítulo 1: búsqueda en todo el archivo
+            if search_term:
+                norm = df.applymap(lambda x: normalize_text(x))
+                target = normalize_text(search_term)
+                found_mask = norm.isin([target])
+                match_rows = df[found_mask.any(axis=1)]
+                match_rows_display = match_rows.copy()
+                match_rows_display["Archivo"] = file.name
+                st.subheader(f"📌 Coincidencias en archivo: {file.name}")
+                if not match_rows_display.empty:
+                    st.dataframe(match_rows_display)
+                else:
+                    st.info(f"No se encontraron coincidencias en {file.name}.")
+
+            # Subtítulo 2: duplicados en M, I, C
             for letter in ["M", "I", "C"]:
                 colname = get_col_by_letter(letter)
                 if colname is None:
@@ -96,52 +89,49 @@ if uploaded_files:
                 except Exception as e:
                     error_log.append(f"❌ Error detectando duplicados en columna {letter} de {file.name}: {e}")
 
-            # Subtítulo 3: threshold en columna M y extracción B,C,D,L,M
+            # Subtítulo 3: threshold en M y extracción B,C,D,L,M
             col_M = get_col_by_letter("M")
             if col_M is None:
                 error_log.append(f"❌ Columna M no encontrada en {file.name}")
             else:
                 try:
-                    # parse_number maneja strings con separadores regionales
                     df["_M_num"] = df[col_M].apply(parse_number)
                     filtered = df[df["_M_num"] >= threshold]
-                    if not filtered.empty:
-                        extract_letters = ["B", "C", "D", "L", "M"]
-                        extract_cols = []
-                        missing_extract = []
-                        for lt in extract_letters:
-                            c = get_col_by_letter(lt)
-                            if c is None:
-                                missing_extract.append(lt)
-                            else:
-                                extract_cols.append(c)
-                        if missing_extract:
-                            error_log.append(f"❌ Columnas faltantes para extracción {missing_extract} en {file.name}")
+                    extract_letters = ["B", "C", "D", "L", "M"]
+                    extract_cols = []
+                    missing_extract = []
+                    for lt in extract_letters:
+                        c = get_col_by_letter(lt)
+                        if c is None:
+                            missing_extract.append(lt)
                         else:
-                            out = filtered[extract_cols].copy()
-                            out["Archivo"] = file.name
-                            threshold_report.append(out)
+                            extract_cols.append(c)
+                    if filtered is not None and not filtered.empty and not missing_extract:
+                        out = filtered[extract_cols].copy()
+                        out["Archivo"] = file.name
+                        threshold_report.append(out)
+                    elif missing_extract:
+                        error_log.append(f"❌ Columnas faltantes para extracción {missing_extract} en {file.name}")
                 except Exception as e:
                     error_log.append(f"❌ Error procesando threshold en {file.name}: {e}")
 
-            # Subtítulo 4: validación según B -> C (DNI 8, CEX 9, RUC 11), solo marcar errores
+            # Subtítulo 4: validación B -> C (DNI 8, CEX 9, RUC 11)
             col_B = get_col_by_letter("B")
             col_C = get_col_by_letter("C")
             if col_B is None or col_C is None:
                 error_log.append(f"❌ Columnas B o C faltantes en {file.name}")
             else:
                 try:
-                    def validate_row(row):
-                        tipo = safe_str_preserve(row[col_B]).strip().upper()
-                        valor_raw = safe_str_preserve(row[col_C]).strip()
-                        # vacíos se consideran inválidos si el tipo es uno de los esperados
+                    # Crear columnas estandarizadas para reporte de validación sin alterar df original
+                    df["_tipo_doc"] = df[col_B].astype(str).apply(lambda x: safe_str_preserve(x).strip().upper())
+                    df["_num_doc"] = df[col_C].astype(str).apply(lambda x: safe_str_preserve(x).strip())
+
+                    def validate_row_std(tipo, valor_raw):
                         if valor_raw == "" or valor_raw.lower() in {"nan", "none"}:
                             if tipo in {"DNI", "CEX", "RUC"}:
                                 return f"{tipo} inválido - vacío"
                             return None
-                        # validar según tipo sin alterar el valor original
                         if tipo == "DNI":
-                            # DNI debe ser exactamente 8 dígitos; conservar ceros iniciales si existen
                             if not valor_raw.isdigit() or len(valor_raw) != 8:
                                 return "DNI inválido"
                             return None
@@ -157,12 +147,17 @@ if uploaded_files:
                             return None
                         return None
 
-                    df["Error"] = df.apply(validate_row, axis=1)
-                    errores = df[df["Error"].notna()].copy()
+                    df["_Error_validacion"] = df.apply(lambda r: validate_row_std(r["_tipo_doc"], r["_num_doc"]), axis=1)
+                    errores = df[df["_Error_validacion"].notna()].copy()
                     if not errores.empty:
-                        errores["Archivo"] = file.name
-                        errores["Tipo validación"] = "B/C"
-                        validation_report.append(errores)
+                        # Normalizar columnas de reporte para que todas las entradas en validation_report tengan las mismas columnas
+                        report = pd.DataFrame({
+                            "TipoDocumento": errores["_tipo_doc"].values,
+                            "Documento": errores["_num_doc"].values,
+                            "Error": errores["_Error_validacion"].values,
+                            "Archivo": file.name
+                        })
+                        validation_report.append(report)
                 except Exception as e:
                     error_log.append(f"❌ Error en validación B/C en {file.name}: {e}")
 
@@ -175,7 +170,7 @@ if uploaded_files:
         for err in error_log:
             st.error(err)
 
-    # Mostrar y permitir descarga de duplicados
+    # Duplicados
     if duplicates_report:
         st.subheader("📋 Duplicados detectados")
         dup_df = pd.concat(duplicates_report, ignore_index=True)
@@ -185,7 +180,7 @@ if uploaded_files:
             dup_df.to_excel(writer, index=False, sheet_name="duplicados")
         st.download_button("⬇️ Descargar duplicados", data=buf.getvalue(), file_name="duplicados.xlsx")
 
-    # Mostrar y permitir descarga de threshold
+    # Threshold
     if threshold_report:
         st.subheader("📈 Filas con M >= threshold")
         th_df = pd.concat(threshold_report, ignore_index=True)
@@ -195,19 +190,14 @@ if uploaded_files:
             th_df.to_excel(writer, index=False, sheet_name="filtrados_threshold")
         st.download_button("⬇️ Descargar filtrados por threshold", data=buf.getvalue(), file_name="filtrados_threshold.xlsx")
 
-    # Mostrar y permitir descarga de validaciones B/C
+    # Validaciones B/C (sección garantizada)
+    st.subheader("🧪 Validaciones de formato B/C (solo errores)")
     if validation_report:
-        st.subheader("🧪 Validaciones de formato B/C (solo errores)")
         val_df = pd.concat(validation_report, ignore_index=True)
-        # mostrar columnas relevantes en orden seguro
-        display_cols = []
-        if col_B in val_df.columns:
-            display_cols.append(col_B)
-        if col_C in val_df.columns:
-            display_cols.append(col_C)
-        display_cols += ["Error", "Archivo", "Tipo validación"]
-        st.dataframe(val_df[display_cols])
+        st.dataframe(val_df)
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
             val_df.to_excel(writer, index=False, sheet_name="errores_validacion")
         st.download_button("⬇️ Descargar errores de validación", data=buf.getvalue(), file_name="errores_validacion.xlsx")
+    else:
+        st.info("No se detectaron errores de validación B/C.")
