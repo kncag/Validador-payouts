@@ -20,6 +20,7 @@ def parse_number(val):
         if s == "" or s.lower() in {"nan", "none"}:
             return np.nan
         s = re.sub(r"\s+", "", s)
+        # Regla: '.' decimal, ',' miles
         if "." in s:
             s = s.replace(",", "")
             if s.count(".") > 1:
@@ -39,32 +40,35 @@ def safe_str_preserve(val):
     s = re.sub(r"\.0+$", "", s)
     return s
 
-# Layout centrado para uploader
-col_left, col_center, col_right = st.columns([1, 2, 1])
-with col_center:
+# Uploader y caja de coincidencias juntos (siempre visibles)
+col_l, col_c, col_r = st.columns([1, 2, 1])
+with col_c:
     uploaded_files = st.file_uploader("📁 Suba uno o varios archivos Excel", type=["xlsx"], accept_multiple_files=True)
+    # Caja de coincidencias siempre visible y permite múltiples criterios separados por coma
+    lista_negra_input = st.text_input("🔎 Lista Negra (ingresa uno o más criterios separados por coma)")
 
-# Preparar contenedores de salida (orden: coincidencias primero)
+# Checkbox para duplicados: incluir columna I ("Referencia")
+with st.sidebar:
+    include_ref = st.checkbox("Incluir columna I como Referencia en Duplicados", value=True)
+
+# Contenedores de salida (pero solo mostramos subtítulos si hay datos)
 matches_container = st.container()
 duplicates_container = st.container()
 threshold_container = st.container()
 validation_container = st.container()
 errors_container = st.container()
 
-# Variables para acumulación
+# Acumuladores
 error_log = []
 duplicates_report = []
 threshold_report = []
 validation_report = []
 matches_report = []
 
-if uploaded_files:
-    # Mostrar caja de búsqueda y threshold SOLO después de subir archivos, centradas
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        search_term = st.text_input("🔍 Ingrese texto o número a buscar (coincidencia exacta, sin espacios)")
-        threshold = st.number_input("⚙️ Umbral para columna M (ej. 30000)", min_value=0, value=30000)
+# Default threshold fijo en UI (label renombrado en UI final)
+threshold = st.number_input("⚙️ Umbral para columna M (ej. 30000)", min_value=0, value=30000)
 
+if uploaded_files:
     for file in uploaded_files:
         try:
             df = pd.read_excel(file, header=0, dtype=str)
@@ -77,20 +81,28 @@ if uploaded_files:
                 except:
                     return None
 
-            # Subtítulo 1: búsqueda en todo el archivo (si hubo término)
-            if search_term:
-                norm = df.applymap(lambda x: normalize_text(x))
-                target = normalize_text(search_term)
-                found_mask = norm.isin([target])
-                match_rows = df[found_mask.any(axis=1)].copy()
+            # LISTA NEGRA: múltiples criterios (coma-separados), coincidencia exacta sin espacios
+            if lista_negra_input:
+                criteria = [normalize_text(x) for x in lista_negra_input.split(",") if x.strip() != ""]
+                if criteria:
+                    norm = df.applymap(lambda x: normalize_text(x))
+                    mask = False
+                    for c in criteria:
+                        mask = mask | norm.isin([c])
+                    matches = df[mask.any(axis=1)].copy()
+                else:
+                    matches = pd.DataFrame()
             else:
-                match_rows = pd.DataFrame()
-            if not match_rows.empty:
-                match_rows["Archivo"] = file.name
-                matches_report.append(match_rows)
+                matches = pd.DataFrame()
+            if not matches.empty:
+                matches["Archivo"] = file.name
+                matches_report.append(matches)
 
-            # Subtítulo 2: duplicados completos en C, D, I, M, R, S
-            dup_letters = ["C", "D", "I", "M", "R", "S"]
+            # DUPLICADOS: solo coinciden todas las columnas elegidas simultáneamente
+            # Columnas fijas por letra: C, D, I (opcional), M, R, S
+            dup_letters = ["C", "D", "M", "R", "S"]
+            if include_ref:
+                dup_letters.insert(2, "I")  # posición para I como "Referencia"
             dup_cols = []
             missing_dup = []
             for lt in dup_letters:
@@ -107,10 +119,11 @@ if uploaded_files:
                 if duplicated_mask.any():
                     dups_report = df.loc[duplicated_mask].copy()
                     dups_report["Archivo"] = file.name
+                    # Marcar columnas comprobadas por su letra para trazabilidad
                     dups_report["Columnas comprobadas"] = ",".join(dup_letters)
                     duplicates_report.append(dups_report)
 
-            # Subtítulo 3: threshold en M y extracción B,C,D,L,M
+            # IMPORTES MAYORES A 30,000: parsear M con regla . decimal , miles
             col_M = get_col_by_letter("M")
             if col_M is None:
                 error_log.append(f"❌ Columna M no encontrada en {file.name}")
@@ -136,7 +149,7 @@ if uploaded_files:
                 except Exception as e:
                     error_log.append(f"❌ Error procesando threshold en {file.name}: {e}")
 
-            # Subtítulo 4: validación B -> C (DNI 8, CEX 9, RUC 11)
+            # DOCUMENTOS ERRADOS: validación B -> C (DNI 8, CEX 9, RUC 11)
             col_B = get_col_by_letter("B")
             col_C = get_col_by_letter("C")
             if col_B is None or col_C is None:
@@ -183,81 +196,50 @@ if uploaded_files:
         except Exception as e:
             error_log.append(f"❌ Error procesando {file.name}: {e}")
 
-    # Sección Coincidencias (primera)
-    with matches_container:
-        st.subheader("📌 Coincidencias de búsqueda")
-        if matches_report:
-            matches_df = pd.concat(matches_report, ignore_index=True)
-            st.dataframe(matches_df)
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                matches_df.to_excel(writer, index=False, sheet_name="coincidencias")
-            st.download_button("⬇️ Descargar coincidencias", data=buf.getvalue(), file_name="coincidencias.xlsx")
-        else:
-            st.info("No se realizaron búsquedas o no se encontraron coincidencias.")
+# Mostrar secciones solo si hay datos; subtítulos renombrados según tu pedido
 
-    # Sección Duplicados
-    with duplicates_container:
-        st.subheader("📋 Duplicados detectados (C, D, I, M, R, S)")
-        if duplicates_report:
-            dup_df = pd.concat(duplicates_report, ignore_index=True)
-            st.dataframe(dup_df)
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                dup_df.to_excel(writer, index=False, sheet_name="duplicados")
-            st.download_button("⬇️ Descargar duplicados", data=buf.getvalue(), file_name="duplicados.xlsx")
-        else:
-            st.info("No se encontraron duplicados completos en C, D, I, M, R, S.")
+# LISTA NEGRA (mostrada primero si hay resultados)
+if matches_report:
+    matches_df = pd.concat(matches_report, ignore_index=True)
+    st.subheader("Lista Negra")
+    st.dataframe(matches_df)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        matches_df.to_excel(writer, index=False, sheet_name="lista_negra")
+    st.download_button("⬇️ Descargar Lista Negra", data=buf.getvalue(), file_name="lista_negra.xlsx")
 
-    # Sección Threshold
-    with threshold_container:
-        st.subheader("📈 Filas con M >= threshold")
-        if threshold_report:
-            th_df = pd.concat(threshold_report, ignore_index=True)
-            st.dataframe(th_df)
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                th_df.to_excel(writer, index=False, sheet_name="filtrados_threshold")
-            st.download_button("⬇️ Descargar filtrados por threshold", data=buf.getvalue(), file_name="filtrados_threshold.xlsx")
-        else:
-            st.info("No se encontraron filas que cumplan el threshold en las columnas M procesadas.")
+# DUPLICADOS
+if duplicates_report:
+    dup_df = pd.concat(duplicates_report, ignore_index=True)
+    st.subheader("Duplicados")
+    st.dataframe(dup_df)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        dup_df.to_excel(writer, index=False, sheet_name="duplicados")
+    st.download_button("⬇️ Descargar Duplicados", data=buf.getvalue(), file_name="duplicados.xlsx")
 
-    # Sección Validaciones B/C
-    with validation_container:
-        st.subheader("🧪 Validaciones de formato B/C (solo errores)")
-        if validation_report:
-            val_df = pd.concat(validation_report, ignore_index=True)
-            st.dataframe(val_df)
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-                val_df.to_excel(writer, index=False, sheet_name="errores_validacion")
-            st.download_button("⬇️ Descargar errores de validación", data=buf.getvalue(), file_name="errores_validacion.xlsx")
-        else:
-            st.info("No se detectaron errores de validación B/C.")
+# IMPORTES MAYORES A 30,000
+if threshold_report:
+    th_df = pd.concat(threshold_report, ignore_index=True)
+    st.subheader("Importes mayores a 30,000")
+    st.dataframe(th_df)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        th_df.to_excel(writer, index=False, sheet_name="importes_mayores")
+    st.download_button("⬇️ Descargar importes", data=buf.getvalue(), file_name="importes_mayores.xlsx")
 
-    # Sección Errores (al final)
-    with errors_container:
-        st.subheader("🚨 Errores detectados")
-        if error_log:
-            for err in error_log:
-                st.error(err)
-        else:
-            st.info("No se detectaron errores de procesamiento.")
+# DOCUMENTOS ERRADOS
+if validation_report:
+    val_df = pd.concat(validation_report, ignore_index=True)
+    st.subheader("Documentos errados")
+    st.dataframe(val_df)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+        val_df.to_excel(writer, index=False, sheet_name="documentos_errados")
+    st.download_button("⬇️ Descargar documentos errados", data=buf.getvalue(), file_name="documentos_errados.xlsx")
 
-else:
-    # No hay archivos subidos: mostrar todas las secciones vacías (coincidencias primero)
-    with matches_container:
-        st.subheader("📌 Coincidencias de búsqueda")
-        st.info("Sube archivos y realiza una búsqueda para ver coincidencias.")
-    with duplicates_container:
-        st.subheader("📋 Duplicados detectados (C, D, I, M, R, S)")
-        st.info("Sube archivos para detectar duplicados completos en C, D, I, M, R, S.")
-    with threshold_container:
-        st.subheader("📈 Filas con M >= threshold")
-        st.info("Sube archivos para evaluar el threshold en columna M.")
-    with validation_container:
-        st.subheader("🧪 Validaciones de formato B/C (solo errores)")
-        st.info("Sube archivos para ejecutar las validaciones B/C.")
-    with errors_container:
-        st.subheader("🚨 Errores detectados")
-        st.info("No se detectaron errores de procesamiento.")
+# ERROR DE ARCHIVO (mostrar solo si hay mensajes)
+if error_log:
+    st.subheader("Error de archivo")
+    for err in error_log:
+        st.error(err)
