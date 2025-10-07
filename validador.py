@@ -181,14 +181,24 @@ def rech_post_handler(df: pd.DataFrame, ui_feedback_callable=None) -> tuple[bool
             ui_feedback_callable("error", msg)
     return (200 <= status < 300), msg
 
-# ---------- UI: uploader, Lista Negra y checkbox en la misma fila ----------
-col_u, col_l, col_cb = st.columns([2, 3, 1])
-with col_u:
-    uploaded_files = st.file_uploader("📁 Suba uno o varios archivos Excel", type=["xlsx"], accept_multiple_files=True)
-with col_l:
-    lista_negra_input = st.text_input("🔎 Lista Negra (ingresa uno o más criterios separados por coma)")
-with col_cb:
+# ---------- NUEVA UI: uploader en su propia fila con placeholder y badge ----------
+# Uploader en su propia fila / contenedor
+uploader_container = st.container()
+with uploader_container:
+    st.subheader("Subir archivos")
+    st.markdown("Arrastra o selecciona archivos Excel (.xlsx).")
+    uploaded_files = st.file_uploader("", type=["xlsx"], accept_multiple_files=True, key="main_uploader")
+    uploaded_count = len(uploaded_files) if uploaded_files else 0
+    st.metric(label="Archivos cargados", value=str(uploaded_count))
+
+# Inputs secundarios en fila separada (debajo)
+col1, col2, col3 = st.columns([3, 2, 1])
+with col1:
+    lista_negra_input = st.text_input("🔎 Lista Negra (criterios separados por coma)")
+with col2:
     include_ref = st.checkbox("Incluir I como Referencia", value=True)
+with col3:
+    st.write("")
 
 THRESHOLD_FIXED = 30000
 
@@ -407,7 +417,6 @@ if duplicates_report:
     st.subheader("Duplicados")
     st.dataframe(dup_df)
 
-    # Construir df_out_dup mapeando desde las filas duplicadas
     out_rows_dup = []
     for _, r in dup_df.iterrows():
         try:
@@ -415,7 +424,6 @@ if duplicates_report:
             nombre = ""
             referencia = ""
             importe_val = ""
-            # extraer por posición/encabezado similar a Lista Negra
             if "DOCUMENTO" in r.index:
                 dni = safe_str_preserve(r["DOCUMENTO"])
             elif "B" in r.index:
@@ -499,7 +507,6 @@ if validation_report:
     st.subheader("Documentos errados")
     st.dataframe(val_df)
 
-    # Construir df_out mapeando desde los originales por columna B o C posicional
     out_rows = []
     unmapped_docs = []
     for _, err_row in val_df.iterrows():
@@ -548,7 +555,6 @@ if validation_report:
     st.markdown("**Preview (exactamente lo que se enviará al endpoint)**")
     st.dataframe(df_out)
 
-    # Botones: enviar (RECH-POSTMAN) y descargar (descarga exactamente preview)
     btn1, btn2 = st.columns([1, 1])
     with btn1:
         if st.button("RECH-POSTMAN"):
