@@ -1,4 +1,4 @@
-# validador_typed_c_col_dni.py
+# validador_typed_numero_documento.py
 from __future__ import annotations
 import re
 import io
@@ -370,8 +370,8 @@ def main():
         st.dataframe(matches_df)
         rows: List[RejectionRow] = []
         for _, r in matches_df.iterrows():
-            # ahora preferimos columna C para dni/cex
-            dni = safe_str(r.get("C") or r.get("DOCUMENTO") or "")
+            # usar exclusivamente la columna de encabezado "NUMERO DOCUMENTO" como fuente de dni/cex
+            dni = safe_str(r.get("NUMERO DOCUMENTO"))
             nombre = safe_str(r.get("NOMBRE") or r.get("D") or "")
             referencia = safe_str(r.get("REFERENCIA") or r.get("I") or "")
             importe_val = parse_number(r.get("MONTO") or r.get("M") or "")
@@ -394,8 +394,8 @@ def main():
         st.dataframe(dup_df)
         rows_dup: List[RejectionRow] = []
         for _, r in dup_df.iterrows():
-            # preferimos columna C para dni/cex
-            dni = safe_str(r.get("C") or r.get("DOCUMENTO") or "")
+            # usar exclusivamente la columna de encabezado "NUMERO DOCUMENTO" como fuente de dni/cex
+            dni = safe_str(r.get("NUMERO DOCUMENTO"))
             nombre = safe_str(r.get("NOMBRE") or r.get("D") or "")
             referencia = safe_str(r.get("REFERENCIA") or r.get("I") or "")
             importe_val = parse_number(r.get("MONTO") or r.get("M") or "")
@@ -435,9 +435,9 @@ def main():
             for orig in originals:
                 candidate = find_row_by_document_positional(orig, doc_val)
                 if candidate is not None:
-                    # para los errados, extraer dni/cex desde la columna C cuando exista
-                    colC = get_col_by_letter("C", orig)
-                    dni = safe_str(candidate.get(colC)) if colC else safe_str(candidate.get(get_col_by_letter("B", orig))) if get_col_by_letter("B", orig) else ""
+                    # usar exclusivamente la columna de encabezado "NUMERO DOCUMENTO" como fuente de dni/cex
+                    col_num_doc = "NUMERO DOCUMENTO"
+                    dni = safe_str(candidate.get(col_num_doc))
                     nombre = safe_str(candidate.get(get_col_by_letter("D", orig))) if get_col_by_letter("D", orig) else ""
                     referencia = safe_str(candidate.get(get_col_by_letter("I", orig))) if get_col_by_letter("I", orig) else ""
                     monto_val = parse_number(candidate.get(get_col_by_letter("M", orig))) if get_col_by_letter("M", orig) else float("nan")
