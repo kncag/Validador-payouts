@@ -356,7 +356,7 @@ def main():
     with col1:
         lista_negra_input = st.text_input("🔎 Lista Negra (criterios separados por coma)")
     with col2:
-        include_ref = st.checkbox("Incluir I como Referencia", value=True)
+        include_ref = st.checkbox("Incluir Referencia en Duplicados", value=True)
 
     # procesamiento
     matches_report, duplicates_report, threshold_report, validation_report, originals, error_log = process_uploaded_files(
