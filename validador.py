@@ -3,9 +3,14 @@ import pandas as pd
 import numpy as np
 import io
 import re
+import json
+import requests
+from datetime import datetime
 
 st.set_page_config(page_title="Validador Excel", layout="centered")
 st.title("📊 Validador y Analizador de Archivos Excel")
+
+# ---------- Utilidades generales ----------
 
 def normalize_text(val):
     if pd.isna(val):
@@ -40,25 +45,107 @@ def safe_str_preserve(val):
     s = re.sub(r"\.0+$", "", s)
     return s
 
-# Layout: misma fila con uploader, Lista Negra y checkbox
+# ---------- Constantes RECH (pegadas tal cual en tu especificación) ----------
+ENDPOINT = "https://q6caqnpy09.execute-api.us-east-1.amazonaws.com/OPS/kpayout/v1/payout_process/reject_invoices_batch"
+
+OUT_COLS = [
+    "dni/cex",
+    "nombre",
+    "importe",
+    "Referencia",
+    "Estado",
+    "Codigo de Rechazo",
+    "Descripcion de Rechazo",
+]
+
+SUBSET_COLS = [
+    "Referencia",
+    "Estado",
+    "Codigo de Rechazo",
+    "Descripcion de Rechazo",
+]
+
+CODE_DESC = {
+    "R001": "DOCUMENTO ERRADO",
+    "R002": "CUENTA INVALIDA",
+    "R007": "RECHAZO POR CCI",
+}
+
+ESTADO = "rechazada"
+
+# ---------- Funciones RECH tal cual proporcionadas ----------
+def df_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Rechazos")
+    return buf.getvalue()
+
+def post_to_endpoint(excel_bytes: bytes) -> tuple[int, str]:
+    files = {
+        "edt": (
+            "rechazos.xlsx",
+            excel_bytes,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    resp = requests.post(ENDPOINT, files=files)
+    return resp.status_code, resp.text
+
+def rech_post_handler(df: pd.DataFrame, ui_feedback_callable=None) -> tuple[bool, str]:
+    """
+    Valida df y lo envía al ENDPOINT.
+    - df debe tener columnas EXACTAS en el orden OUT_COLS.
+    - ui_feedback_callable: opcional, función que recibe (level, message) e.g. lambda lvl,m: getattr(st, lvl)(m)
+    Returns (sent_ok, message).
+    """
+    if list(df.columns) != OUT_COLS:
+        msg = f"Encabezados inválidos. Se requieren: {OUT_COLS}"
+        if ui_feedback_callable: ui_feedback_callable("error", msg)
+        return False, msg
+
+    payload = df[SUBSET_COLS]
+    try:
+        excel_bytes = df_to_excel_bytes(payload)
+    except Exception as e:
+        msg = f"Error generando Excel: {e}"
+        if ui_feedback_callable: ui_feedback_callable("error", msg)
+        return False, msg
+
+    try:
+        status, resp_text = post_to_endpoint(excel_bytes)
+    except Exception as e:
+        msg = f"Error realizando POST: {e}"
+        if ui_feedback_callable: ui_feedback_callable("error", msg)
+        return False, msg
+
+    msg = f"{status}: {resp_text}"
+    if ui_feedback_callable:
+        if 200 <= status < 300:
+            ui_feedback_callable("success", msg)
+        else:
+            ui_feedback_callable("error", msg)
+    return (200 <= status < 300), msg
+
+# ---------- UI: uploader, Lista Negra y checkbox en la misma fila ----------
 col_u, col_l, col_cb = st.columns([2, 3, 1])
 with col_u:
     uploaded_files = st.file_uploader("📁 Suba uno o varios archivos Excel", type=["xlsx"], accept_multiple_files=True)
 with col_l:
     lista_negra_input = st.text_input("🔎 Lista Negra (ingresa uno o más criterios separados por coma)")
 with col_cb:
-    include_ref = st.checkbox("Incluir Referencia", value=True)
+    include_ref = st.checkbox("Incluir I como Referencia", value=True)
 
-# Contenedores / acumuladores
+# Threshold fijo (se mantiene 30000 como constante interna)
+THRESHOLD_FIXED = 30000
+
+# Contenedores de resultados (mostraremos subtítulos solo si hay datos)
 matches_report = []
 duplicates_report = []
 threshold_report = []
 validation_report = []
 error_log = []
 
-# Umbral fijo (sin input) según tu pedido
-THRESHOLD_FIXED = 30000
-
+# Procesamiento de archivos si hay uploads
 if uploaded_files:
     for file in uploaded_files:
         try:
@@ -72,7 +159,7 @@ if uploaded_files:
                 except:
                     return None
 
-            # LISTA NEGRA: múltiples criterios (coma-separados), coincidencia exacta sin espacios
+            # Lista Negra: múltiples criterios
             if lista_negra_input:
                 criteria = [normalize_text(x) for x in lista_negra_input.split(",") if x.strip() != ""]
                 if criteria:
@@ -89,7 +176,7 @@ if uploaded_files:
                 matches["Archivo"] = file.name
                 matches_report.append(matches)
 
-            # DUPLICADOS: coincidencia completa en C, D, (I opcional), M, R, S
+            # Duplicados: coincidencia completa en C, D, (I opcional), M, R, S
             dup_letters = ["C", "D", "M", "R", "S"]
             if include_ref:
                 dup_letters.insert(2, "I")
@@ -112,7 +199,7 @@ if uploaded_files:
                     dups_report["Columnas comprobadas"] = ",".join(dup_letters)
                     duplicates_report.append(dups_report)
 
-            # IMPORTES MAYORES A 30,000 (umbral fijo)
+            # Importes mayores a 30,000 (umbral fijo)
             col_M = get_col_by_letter("M")
             if col_M is None:
                 error_log.append(f"❌ Columna M no encontrada en {file.name}")
@@ -138,7 +225,7 @@ if uploaded_files:
                 except Exception as e:
                     error_log.append(f"❌ Error procesando importes en {file.name}: {e}")
 
-            # DOCUMENTOS ERRADOS: validación B -> C (DNI 8, CEX 9, RUC 11)
+            # Documentos errados: validación B -> C (DNI 8, CEX 9, RUC 11)
             col_B = get_col_by_letter("B")
             col_C = get_col_by_letter("C")
             if col_B is None or col_C is None:
@@ -185,8 +272,9 @@ if uploaded_files:
         except Exception as e:
             error_log.append(f"❌ Error procesando {file.name}: {e}")
 
-# Mostrar secciones solo si hay datos; subtítulos renombrados
+# ---------- Renderizado de secciones: solo mostrar subtítulos si hay datos ----------
 
+# Lista Negra (primera)
 if matches_report:
     matches_df = pd.concat(matches_report, ignore_index=True)
     st.subheader("Lista Negra")
@@ -196,6 +284,7 @@ if matches_report:
         matches_df.to_excel(writer, index=False, sheet_name="lista_negra")
     st.download_button("⬇️ Descargar Lista Negra", data=buf.getvalue(), file_name="lista_negra.xlsx")
 
+# Duplicados
 if duplicates_report:
     dup_df = pd.concat(duplicates_report, ignore_index=True)
     st.subheader("Duplicados")
@@ -205,6 +294,7 @@ if duplicates_report:
         dup_df.to_excel(writer, index=False, sheet_name="duplicados")
     st.download_button("⬇️ Descargar Duplicados", data=buf.getvalue(), file_name="duplicados.xlsx")
 
+# Importes mayores a 30,000
 if threshold_report:
     th_df = pd.concat(threshold_report, ignore_index=True)
     st.subheader("Importes mayores a 30,000")
@@ -214,15 +304,89 @@ if threshold_report:
         th_df.to_excel(writer, index=False, sheet_name="importes_mayores")
     st.download_button("⬇️ Descargar importes", data=buf.getvalue(), file_name="importes_mayores.xlsx")
 
+# Documentos errados + RECH UI (preview, endpoint, descarga complementaria)
 if validation_report:
     val_df = pd.concat(validation_report, ignore_index=True)
     st.subheader("Documentos errados")
-    st.dataframe(val_df)
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-        val_df.to_excel(writer, index=False, sheet_name="documentos_errados")
-    st.download_button("⬇️ Descargar documentos errados", data=buf.getvalue(), file_name="documentos_errados.xlsx")
 
+    # Transformación para endpoint (simple mapping)
+    def transform_for_endpoint(df_in):
+        df = df_in.copy()
+        for col in ["TipoDocumento", "Documento", "Error", "Archivo"]:
+            if col not in df.columns:
+                df[col] = None
+        payload = []
+        for _, r in df.iterrows():
+            payload.append({
+                "tipo": str(r["TipoDocumento"]) if pd.notna(r["TipoDocumento"]) else "",
+                "documento": str(r["Documento"]) if pd.notna(r["Documento"]) else "",
+                "motivo": str(r["Error"]) if pd.notna(r["Error"]) else "",
+                "origen": str(r["Archivo"]) if pd.notna(r["Archivo"]) else ""
+            })
+        return payload
+
+    payload = transform_for_endpoint(val_df)
+
+    # Botones y preview en fila, campo endpoint editable
+    btn_col1, btn_col2, btn_col3 = st.columns([2, 2, 2])
+
+    with btn_col1:
+        if st.button("🔍 Preview para endpoint"):
+            preview_df = pd.DataFrame(payload[:20])
+            st.markdown("**Preview (primeros 20 items)**")
+            st.dataframe(preview_df)
+
+    with btn_col2:
+        endpoint_url = st.text_input("Endpoint URL", value=ENDPOINT, key="rech_endpoint")
+        headers_raw = st.text_input("Headers JSON (opcional)", value='{}', key="rech_headers")
+        try:
+            headers = json.loads(headers_raw) if headers_raw.strip() else {}
+        except:
+            headers = {}
+            st.warning("Headers no válidos: se enviarán sin headers.")
+        if st.button("📤 Enviar al endpoint (RECH-POSTMAN)"):
+            # Construir df_out con OUT_COLS si es posible; si no, construir minimal y dejar que el handler valide
+            # Intentaremos construir df_out si las columnas coinciden con el mapping mínimo
+            # Aquí asumimos val_df contiene TipoDocumento->Documento->Error->Archivo
+            df_out = pd.DataFrame(columns=OUT_COLS)
+            for _, r in val_df.iterrows():
+                row = {
+                    "dni/cex": r.get("Documento", ""),
+                    "nombre": "",
+                    "importe": "",
+                    "Referencia": "",
+                    "Estado": ESTADO,
+                    "Codigo de Rechazo": "R001",
+                    "Descripcion de Rechazo": r.get("Error", "")
+                }
+                df_out = pd.concat([df_out, pd.DataFrame([row])], ignore_index=True)
+
+            # Llamada al handler (usando la versión provista; no aplicamos correcciones adicionales)
+            sent_ok, message = rech_post_handler(df_out, ui_feedback_callable=lambda lvl, m: getattr(st, lvl)(m))
+            if sent_ok:
+                st.info("Envío completado correctamente.")
+            else:
+                st.error(f"Envío fallido: {message}")
+
+    with btn_col3:
+        # Generar archivo complementario CSV con payload_json por fila
+        buf = io.StringIO()
+        complement_df = val_df.copy()
+        complement_df["payload_json"] = complement_df.apply(
+            lambda r: json.dumps({
+                "tipo": r.get("TipoDocumento",""),
+                "documento": r.get("Documento",""),
+                "motivo": r.get("Error",""),
+                "origen": r.get("Archivo","")
+            }, ensure_ascii=False), axis=1)
+        complement_df.to_csv(buf, index=False)
+        csv_data = buf.getvalue().encode("utf-8")
+        st.download_button("⬇️ Descargar complementaria (CSV)", data=csv_data, file_name="documentos_errados_complementaria.csv", mime="text/csv")
+
+    # Mostrar la tabla original de errores debajo
+    st.dataframe(val_df)
+
+# Error de archivo (solo si hay mensajes)
 if error_log:
     st.subheader("Error de archivo")
     for err in error_log:
