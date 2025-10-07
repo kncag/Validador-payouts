@@ -40,33 +40,24 @@ def safe_str_preserve(val):
     s = re.sub(r"\.0+$", "", s)
     return s
 
-# Uploader y caja de coincidencias juntos (siempre visibles)
-col_l, col_c, col_r = st.columns([1, 2, 1])
-with col_c:
+# Layout: misma fila con uploader, Lista Negra y checkbox
+col_u, col_l, col_cb = st.columns([2, 3, 1])
+with col_u:
     uploaded_files = st.file_uploader("📁 Suba uno o varios archivos Excel", type=["xlsx"], accept_multiple_files=True)
-    # Caja de coincidencias siempre visible y permite múltiples criterios separados por coma
+with col_l:
     lista_negra_input = st.text_input("🔎 Lista Negra (ingresa uno o más criterios separados por coma)")
+with col_cb:
+    include_ref = st.checkbox("Incluir I como Referencia", value=True)
 
-# Checkbox para duplicados: incluir columna I ("Referencia")
-with st.sidebar:
-    include_ref = st.checkbox("Incluir columna I como Referencia en Duplicados", value=True)
-
-# Contenedores de salida (pero solo mostramos subtítulos si hay datos)
-matches_container = st.container()
-duplicates_container = st.container()
-threshold_container = st.container()
-validation_container = st.container()
-errors_container = st.container()
-
-# Acumuladores
-error_log = []
+# Contenedores / acumuladores
+matches_report = []
 duplicates_report = []
 threshold_report = []
 validation_report = []
-matches_report = []
+error_log = []
 
-# Default threshold fijo en UI (label renombrado en UI final)
-threshold = st.number_input("⚙️ Umbral para columna M (ej. 30000)", min_value=0, value=30000)
+# Umbral fijo (sin input) según tu pedido
+THRESHOLD_FIXED = 30000
 
 if uploaded_files:
     for file in uploaded_files:
@@ -98,11 +89,10 @@ if uploaded_files:
                 matches["Archivo"] = file.name
                 matches_report.append(matches)
 
-            # DUPLICADOS: solo coinciden todas las columnas elegidas simultáneamente
-            # Columnas fijas por letra: C, D, I (opcional), M, R, S
+            # DUPLICADOS: coincidencia completa en C, D, (I opcional), M, R, S
             dup_letters = ["C", "D", "M", "R", "S"]
             if include_ref:
-                dup_letters.insert(2, "I")  # posición para I como "Referencia"
+                dup_letters.insert(2, "I")
             dup_cols = []
             missing_dup = []
             for lt in dup_letters:
@@ -119,18 +109,17 @@ if uploaded_files:
                 if duplicated_mask.any():
                     dups_report = df.loc[duplicated_mask].copy()
                     dups_report["Archivo"] = file.name
-                    # Marcar columnas comprobadas por su letra para trazabilidad
                     dups_report["Columnas comprobadas"] = ",".join(dup_letters)
                     duplicates_report.append(dups_report)
 
-            # IMPORTES MAYORES A 30,000: parsear M con regla . decimal , miles
+            # IMPORTES MAYORES A 30,000 (umbral fijo)
             col_M = get_col_by_letter("M")
             if col_M is None:
                 error_log.append(f"❌ Columna M no encontrada en {file.name}")
             else:
                 try:
                     df["_M_num"] = df[col_M].apply(parse_number)
-                    filtered = df[df["_M_num"] >= threshold]
+                    filtered = df[df["_M_num"] >= THRESHOLD_FIXED]
                     extract_letters = ["B", "C", "D", "L", "M"]
                     extract_cols = []
                     missing_extract = []
@@ -147,7 +136,7 @@ if uploaded_files:
                         out["Archivo"] = file.name
                         threshold_report.append(out)
                 except Exception as e:
-                    error_log.append(f"❌ Error procesando threshold en {file.name}: {e}")
+                    error_log.append(f"❌ Error procesando importes en {file.name}: {e}")
 
             # DOCUMENTOS ERRADOS: validación B -> C (DNI 8, CEX 9, RUC 11)
             col_B = get_col_by_letter("B")
@@ -196,9 +185,8 @@ if uploaded_files:
         except Exception as e:
             error_log.append(f"❌ Error procesando {file.name}: {e}")
 
-# Mostrar secciones solo si hay datos; subtítulos renombrados según tu pedido
+# Mostrar secciones solo si hay datos; subtítulos renombrados
 
-# LISTA NEGRA (mostrada primero si hay resultados)
 if matches_report:
     matches_df = pd.concat(matches_report, ignore_index=True)
     st.subheader("Lista Negra")
@@ -208,7 +196,6 @@ if matches_report:
         matches_df.to_excel(writer, index=False, sheet_name="lista_negra")
     st.download_button("⬇️ Descargar Lista Negra", data=buf.getvalue(), file_name="lista_negra.xlsx")
 
-# DUPLICADOS
 if duplicates_report:
     dup_df = pd.concat(duplicates_report, ignore_index=True)
     st.subheader("Duplicados")
@@ -218,7 +205,6 @@ if duplicates_report:
         dup_df.to_excel(writer, index=False, sheet_name="duplicados")
     st.download_button("⬇️ Descargar Duplicados", data=buf.getvalue(), file_name="duplicados.xlsx")
 
-# IMPORTES MAYORES A 30,000
 if threshold_report:
     th_df = pd.concat(threshold_report, ignore_index=True)
     st.subheader("Importes mayores a 30,000")
@@ -228,7 +214,6 @@ if threshold_report:
         th_df.to_excel(writer, index=False, sheet_name="importes_mayores")
     st.download_button("⬇️ Descargar importes", data=buf.getvalue(), file_name="importes_mayores.xlsx")
 
-# DOCUMENTOS ERRADOS
 if validation_report:
     val_df = pd.concat(validation_report, ignore_index=True)
     st.subheader("Documentos errados")
@@ -238,7 +223,6 @@ if validation_report:
         val_df.to_excel(writer, index=False, sheet_name="documentos_errados")
     st.download_button("⬇️ Descargar documentos errados", data=buf.getvalue(), file_name="documentos_errados.xlsx")
 
-# ERROR DE ARCHIVO (mostrar solo si hay mensajes)
 if error_log:
     st.subheader("Error de archivo")
     for err in error_log:
