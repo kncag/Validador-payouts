@@ -57,33 +57,69 @@ def normalize_doc_for_match(s: str) -> str:
 
 def find_row_by_document_positional(orig_df, doc_val):
     """
-    Busca la primera fila en orig_df cuya columna B (posicional) coincida con doc_val
+    Busca la primera fila en orig_df cuya columna B o C (posicional) coincida con doc_val
     aplicando normalizaciones sucesivas. Devuelve la Series de la fila o None.
     """
-    col_B = get_col_by_letter("B", orig_df)
-    if col_B is None:
+    # Intentar columna B primero, luego C (ambas posicionales)
+    candidate_cols = []
+    colB = get_col_by_letter("B", orig_df)
+    colC = get_col_by_letter("C", orig_df)
+    if colB is not None:
+        candidate_cols.append(colB)
+    if colC is not None and colC not in candidate_cols:
+        candidate_cols.append(colC)
+    if not candidate_cols:
         return None
 
     target_raw = "" if pd.isna(doc_val) else str(doc_val).strip()
-    # 1) exact match on raw text
-    series = orig_df[col_B].astype(str).apply(lambda x: str(x).strip())
-    mask = series == target_raw
-    if mask.any():
-        return orig_df.loc[mask].iloc[0]
 
-    # 2) digits-only match
-    target_digits = normalize_doc_for_match(target_raw)
-    if target_digits:
-        s_digits = series.apply(lambda x: re.sub(r"\D", "", str(x)))
-        mask2 = s_digits == target_digits
-        if mask2.any():
-            return orig_df.loc[mask2].iloc[0]
-        # 3) try zfill to common lengths
-        for L in (8, 9, 11):
-            if len(target_digits) <= L:
-                target_z = target_digits.zfill(L)
-                if (s_digits == target_z).any():
-                    return orig_df.loc[s_digits == target_z].iloc[0]
+    # Precompute numeric-normalized target
+    try:
+        as_float = float(target_raw)
+        as_int = str(int(as_float))
+    except Exception:
+        as_int = None
+    target_digits = re.sub(r"\D", "", target_raw)
+
+    for col in candidate_cols:
+        series = orig_df[col].astype(str).apply(lambda x: str(x).strip())
+
+        # 0) exact raw match (text)
+        mask = series == target_raw
+        if mask.any():
+            return orig_df.loc[mask].iloc[0]
+
+        # 0.5) match treating target as int-like string (e.g., "7568367.0")
+        if as_int:
+            mask_int = series == as_int
+            if mask_int.any():
+                return orig_df.loc[mask_int].iloc[0]
+
+        # 1) digits-only match
+        if target_digits:
+            s_digits = series.apply(lambda x: re.sub(r"\D", "", x))
+            if (s_digits == target_digits).any():
+                return orig_df.loc[s_digits == target_digits].iloc[0]
+
+            # 2) zfill attempts
+            for L in (8, 9, 11):
+                if len(target_digits) <= L:
+                    tz = target_digits.zfill(L)
+                    if (s_digits == tz).any():
+                        return orig_df.loc[s_digits == tz].iloc[0]
+
+            # 3) compare removing leading zeros on source
+            s_nozeros = s_digits.apply(lambda x: x.lstrip("0"))
+            if (s_nozeros == target_digits.lstrip("0")).any():
+                return orig_df.loc[s_nozeros == target_digits.lstrip("0")].iloc[0]
+
+        # 4) If target is short, try substring match (last N chars) to handle truncated displays
+        if target_digits and len(target_digits) >= 4:
+            s_digits = series.apply(lambda x: re.sub(r"\D", "", x))
+            tail_mask = s_digits.str.endswith(target_digits)
+            if tail_mask.any():
+                return orig_df.loc[tail_mask].iloc[0]
+
     return None
 
 # ---------- Constantes RECH ----------
@@ -328,7 +364,7 @@ if validation_report:
     st.subheader("Documentos errados")
     st.dataframe(val_df)
 
-    # Construir df_out mapeando desde los originales por columna B posicional
+    # Construir df_out mapeando desde los originales por columna B o C posicional
     out_rows = []
     unmapped_docs = []
     for _, err_row in val_df.iterrows():
