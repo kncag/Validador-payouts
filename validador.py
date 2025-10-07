@@ -1,4 +1,4 @@
-# validador_typed.py
+# validador_typed_c_col_dni.py
 from __future__ import annotations
 import re
 import io
@@ -223,9 +223,6 @@ def render_section_actions(df_preview: pd.DataFrame, section_name: str, code: st
 def process_uploaded_files(files: List[Any], lista_negra_input: str, include_ref: bool) -> Tuple[
     List[pd.DataFrame], List[pd.DataFrame], List[pd.DataFrame], List[pd.DataFrame], List[pd.DataFrame], List[str]
 ]:
-    """
-    Devuelve: matches_report, duplicates_report, threshold_report, validation_report, originals, error_log
-    """
     matches_report: List[pd.DataFrame] = []
     duplicates_report: List[pd.DataFrame] = []
     threshold_report: List[pd.DataFrame] = []
@@ -343,7 +340,6 @@ def process_uploaded_files(files: List[Any], lista_negra_input: str, include_ref
     return matches_report, duplicates_report, threshold_report, validation_report, originals, error_log
 
 
-# ---------- UI principal modular ----------
 def main():
     st.set_page_config(page_title="Validador Excel", layout="centered")
     st.title("📊 Validador y Analizador de Archivos Excel")
@@ -360,7 +356,7 @@ def main():
     with col1:
         lista_negra_input = st.text_input("🔎 Lista Negra (criterios separados por coma)")
     with col2:
-        include_ref = st.checkbox("Incluir Referencia (Duplicados)", value=True)
+        include_ref = st.checkbox("Incluir I como Referencia", value=True)
 
     # procesamiento
     matches_report, duplicates_report, threshold_report, validation_report, originals, error_log = process_uploaded_files(
@@ -374,7 +370,8 @@ def main():
         st.dataframe(matches_df)
         rows: List[RejectionRow] = []
         for _, r in matches_df.iterrows():
-            dni = safe_str(r.get("DOCUMENTO") or r.get("B") or "")
+            # ahora preferimos columna C para dni/cex
+            dni = safe_str(r.get("C") or r.get("DOCUMENTO") or "")
             nombre = safe_str(r.get("NOMBRE") or r.get("D") or "")
             referencia = safe_str(r.get("REFERENCIA") or r.get("I") or "")
             importe_val = parse_number(r.get("MONTO") or r.get("M") or "")
@@ -397,7 +394,8 @@ def main():
         st.dataframe(dup_df)
         rows_dup: List[RejectionRow] = []
         for _, r in dup_df.iterrows():
-            dni = safe_str(r.get("DOCUMENTO") or r.get("B") or "")
+            # preferimos columna C para dni/cex
+            dni = safe_str(r.get("C") or r.get("DOCUMENTO") or "")
             nombre = safe_str(r.get("NOMBRE") or r.get("D") or "")
             referencia = safe_str(r.get("REFERENCIA") or r.get("I") or "")
             importe_val = parse_number(r.get("MONTO") or r.get("M") or "")
@@ -437,7 +435,9 @@ def main():
             for orig in originals:
                 candidate = find_row_by_document_positional(orig, doc_val)
                 if candidate is not None:
-                    dni = safe_str(candidate.get(get_col_by_letter("B", orig))) if get_col_by_letter("B", orig) else ""
+                    # para los errados, extraer dni/cex desde la columna C cuando exista
+                    colC = get_col_by_letter("C", orig)
+                    dni = safe_str(candidate.get(colC)) if colC else safe_str(candidate.get(get_col_by_letter("B", orig))) if get_col_by_letter("B", orig) else ""
                     nombre = safe_str(candidate.get(get_col_by_letter("D", orig))) if get_col_by_letter("D", orig) else ""
                     referencia = safe_str(candidate.get(get_col_by_letter("I", orig))) if get_col_by_letter("I", orig) else ""
                     monto_val = parse_number(candidate.get(get_col_by_letter("M", orig))) if get_col_by_letter("M", orig) else float("nan")
@@ -469,7 +469,7 @@ def main():
         render_section_actions(df_out_err, section_name="Documentos errados", code="R001", description="DOCUMENTO ERRADO")
 
     # Errores
-    if error_log:
+    if 'error_log' in locals() and error_log:
         st.subheader("Error de archivo")
         for e in error_log:
             st.error(e)
