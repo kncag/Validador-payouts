@@ -47,7 +47,7 @@ with col_u:
 with col_l:
     lista_negra_input = st.text_input("🔎 Lista Negra (ingresa uno o más criterios separados por coma)")
 with col_cb:
-    include_ref = st.checkbox("Incluir I como Referencia", value=True)
+    include_ref = st.checkbox("Incluir Referencia", value=True)
 
 # Contenedores / acumuladores
 matches_report = []
