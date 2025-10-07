@@ -44,6 +44,13 @@ def safe_str_preserve(val):
     s = re.sub(r"\.0+$", "", s)
     return s
 
+def get_col_by_letter(df, letter):
+    try:
+        idx = ord(letter.upper()) - ord("A")
+        return df.columns[idx]
+    except:
+        return None
+
 # ---------- Constantes RECH ----------
 ENDPOINT = "https://q6caqnpy09.execute-api.us-east-1.amazonaws.com/OPS/kpayout/v1/payout_process/reject_invoices_batch"
 
@@ -116,7 +123,7 @@ def rech_post_handler(df: pd.DataFrame, ui_feedback_callable=None) -> tuple[bool
             ui_feedback_callable("error", msg)
     return (200 <= status < 300), msg
 
-# ---------- UI: uploader, Lista Negra y checkbox en la misma fila ----------
+# ---------- UI: uploader, Lista Negra and checkbox in same row ----------
 col_u, col_l, col_cb = st.columns([2, 3, 1])
 with col_u:
     uploaded_files = st.file_uploader("📁 Suba uno o varios archivos Excel", type=["xlsx"], accept_multiple_files=True)
@@ -134,19 +141,40 @@ threshold_report = []
 validation_report = []
 error_log = []
 
-# Procesamiento
+# Función para construir df_out desde df original (mapeo final pedido)
+def build_df_out_from_df(df):
+    col_B = get_col_by_letter(df, "B")  # DOCUMENTO
+    col_D = get_col_by_letter(df, "D")  # NOMBRE
+    col_I = get_col_by_letter(df, "I")  # REFERENCIA
+    col_M = get_col_by_letter(df, "M")  # MONTO
+    if not all([col_B, col_D, col_I, col_M]):
+        missing = [lt for lt, c in zip(["B","D","I","M"], [col_B,col_D,col_I,col_M]) if c is None]
+        raise ValueError(f"Columnas faltantes: {missing}")
+    out_rows = []
+    for _, r in df.iterrows():
+        dni = safe_str_preserve(r[col_B]).strip()
+        nombre = safe_str_preserve(r[col_D]).strip()
+        referencia = safe_str_preserve(r[col_I]).strip()
+        monto_raw = r[col_M]
+        monto_num = parse_number(monto_raw)
+        importe_val = monto_num if not np.isnan(monto_num) else ""
+        out_rows.append({
+            "dni/cex": dni,
+            "nombre": nombre,
+            "importe": importe_val,
+            "Referencia": referencia,
+            "Estado": ESTADO,
+            "Codigo de Rechazo": "R001",
+            "Descripcion de Rechazo": "DOCUMENTO ERRADO",
+        })
+    return pd.DataFrame(out_rows, columns=OUT_COLS)
+
+# Procesamiento de archivos si hay uploads
 if uploaded_files:
     for file in uploaded_files:
         try:
             df = pd.read_excel(file, header=0, dtype=str)
             df.columns = [str(col) for col in df.columns]
-
-            def get_col_by_letter(letter):
-                try:
-                    idx = ord(letter.upper()) - ord("A")
-                    return df.columns[idx]
-                except:
-                    return None
 
             # Lista Negra
             if lista_negra_input:
@@ -172,7 +200,7 @@ if uploaded_files:
             dup_cols = []
             missing_dup = []
             for lt in dup_letters:
-                c = get_col_by_letter(lt)
+                c = get_col_by_letter(df, lt)
                 if c is None:
                     missing_dup.append(lt)
                 else:
@@ -189,7 +217,7 @@ if uploaded_files:
                     duplicates_report.append(dups_report)
 
             # Importes mayores a 30,000
-            col_M = get_col_by_letter("M")
+            col_M = get_col_by_letter(df, "M")
             if col_M is None:
                 error_log.append(f"❌ Columna M no encontrada en {file.name}")
             else:
@@ -200,7 +228,7 @@ if uploaded_files:
                     extract_cols = []
                     missing_extract = []
                     for lt in extract_letters:
-                        c = get_col_by_letter(lt)
+                        c = get_col_by_letter(df, lt)
                         if c is None:
                             missing_extract.append(lt)
                         else:
@@ -214,16 +242,15 @@ if uploaded_files:
                 except Exception as e:
                     error_log.append(f"❌ Error procesando importes en {file.name}: {e}")
 
-            # Documentos errados
-            col_B = get_col_by_letter("B")
-            col_C = get_col_by_letter("C")
+            # Documentos errados: validación B -> C (DNI 8, CEX 9, RUC 11)
+            col_B = get_col_by_letter(df, "B")
+            col_C = get_col_by_letter(df, "C")
             if col_B is None or col_C is None:
                 error_log.append(f"❌ Columnas B o C faltantes en {file.name}")
             else:
                 try:
                     tipos = df[col_B].astype(str).apply(lambda x: safe_str_preserve(x).strip().upper())
                     numeros = df[col_C].astype(str).apply(lambda x: safe_str_preserve(x).strip())
-
                     def validate_pair(tipo, valor_raw):
                         if valor_raw == "" or valor_raw.lower() in {"nan", "none"}:
                             if tipo in {"DNI", "CEX", "RUC"}:
@@ -244,7 +271,6 @@ if uploaded_files:
                                 return "RUC inválido"
                             return None
                         return None
-
                     errors_series = [validate_pair(t, n) for t, n in zip(tipos, numeros)]
                     report_df = pd.DataFrame({
                         "TipoDocumento": tipos.values,
@@ -254,7 +280,12 @@ if uploaded_files:
                     report_df = report_df[report_df["Error"].notna()].copy()
                     if not report_df.empty:
                         report_df["Archivo"] = file.name
-                        validation_report.append(report_df)
+                        # Guardar el df original para construir df_out desde las columnas B,D,I,M
+                        report_df["_origin_file"] = file.name
+                        # store a reference to the original df for later mapping
+                        report_df["_original_df_index"] = None
+                        # append a tuple (report_df, original df) to validation_report as pair for later reconstruction
+                        validation_report.append((report_df, df))
                 except Exception as e:
                     error_log.append(f"❌ Error en validación B/C en {file.name}: {e}")
 
@@ -289,26 +320,59 @@ if threshold_report:
         th_df.to_excel(writer, index=False, sheet_name="importes_mayores")
     st.download_button("⬇️ Descargar importes", data=buf.getvalue(), file_name="importes_mayores.xlsx")
 
-# Documentos errados + preview + 2 botones (enviar y descargar xlsx)
+# Documentos errados + preview + 2 botones (enviar y descargar XLSX)
 if validation_report:
-    val_df = pd.concat(validation_report, ignore_index=True)
+    # validation_report is a list of tuples (report_df, original_df)
+    # Build a combined val_df for display and keep mapping to original dfs for df_out construction
+    combined_reports = []
+    originals = []
+    for pair in validation_report:
+        report_df, original_df = pair
+        combined_reports.append(report_df)
+        originals.append(original_df)
+    val_df = pd.concat(combined_reports, ignore_index=True)
     st.subheader("Documentos errados")
+    st.dataframe(val_df)
 
-    # Construir df_out (OUT_COLS) que será exactamente lo enviado al endpoint
-    df_out = pd.DataFrame(columns=OUT_COLS)
-    for _, r in val_df.iterrows():
-        row = {
-            "dni/cex": r.get("Documento", ""),
-            "nombre": "",
-            "importe": "",
-            "Referencia": "",
-            "Estado": ESTADO,
-            "Codigo de Rechazo": "R001",
-            "Descripcion de Rechazo": r.get("Error", "")
-        }
-        df_out = pd.concat([df_out, pd.DataFrame([row])], ignore_index=True)
+    # Construir df_out combinando cada report row with its source original dataframe
+    # We will find rows in original dfs that match the Documento and Error to map B,D,I,M values
+    out_rows = []
+    for _, err_row in val_df.iterrows():
+        doc_val = err_row.get("Documento", "")
+        err_file = err_row.get("_origin_file", None)
+        mapped = False
+        # search in the stored original dfs
+        for orig_df in originals:
+            # find rows where column B equals doc_val (by position)
+            colB = get_col_by_letter(orig_df, "B")
+            if colB is None:
+                continue
+            matches = orig_df[orig_df[colB].astype(str).str.strip() == str(doc_val).strip()]
+            if not matches.empty:
+                # take the first matching row
+                r = matches.iloc[0]
+                try:
+                    df_item = build_df_out_from_df(pd.DataFrame([r], columns=orig_df.columns))
+                    if not df_item.empty:
+                        out_rows.append(df_item.iloc[0].to_dict())
+                        mapped = True
+                        break
+                except Exception:
+                    continue
+        if not mapped:
+            # fallback: build minimal row using values from err_row only
+            out_rows.append({
+                "dni/cex": doc_val,
+                "nombre": "",
+                "importe": "",
+                "Referencia": "",
+                "Estado": ESTADO,
+                "Codigo de Rechazo": "R001",
+                "Descripcion de Rechazo": "DOCUMENTO ERRADO",
+            })
+    df_out = pd.DataFrame(out_rows, columns=OUT_COLS)
 
-    # Preview siempre visible y exactamente igual a lo que se enviará
+    # Preview siempre visible: exacto df_out (lo que se enviará)
     st.markdown("**Preview (exactamente lo que se enviará al endpoint)**")
     st.dataframe(df_out)
 
@@ -322,9 +386,10 @@ if validation_report:
             else:
                 st.error(f"Envío fallido: {message}")
     with btn2:
-        # Generar bytes xlsx exactamente con las columnas OUT_COLS -> pero el endpoint espera SUBSET_COLS; mantenemos df_out
-        excel_bytes = df_to_excel_bytes(df_out[SUBSET_COLS])
-        st.download_button("⬇️ Descargar lo enviado (XLSX)", data=excel_bytes, file_name="documentos_errados_rechazos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        # Generar bytes xlsx exactamente con las columnas que el endpoint espera: SUBSET_COLS
+        payload_df = df_out[SUBSET_COLS]
+        excel_bytes = df_to_excel_bytes(payload_df)
+        st.download_button("⬇️ Descargar", data=excel_bytes, file_name="documentos_errados_rechazos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # Error de archivo (solo si hay mensajes)
 if error_log:
