@@ -60,7 +60,6 @@ def find_row_by_document_positional(orig_df, doc_val):
     Busca la primera fila en orig_df cuya columna B o C (posicional) coincida con doc_val
     aplicando normalizaciones sucesivas. Devuelve la Series de la fila o None.
     """
-    # Intentar columna B primero, luego C (ambas posicionales)
     candidate_cols = []
     colB = get_col_by_letter("B", orig_df)
     colC = get_col_by_letter("C", orig_df)
@@ -72,8 +71,6 @@ def find_row_by_document_positional(orig_df, doc_val):
         return None
 
     target_raw = "" if pd.isna(doc_val) else str(doc_val).strip()
-
-    # Precompute numeric-normalized target
     try:
         as_float = float(target_raw)
         as_int = str(int(as_float))
@@ -84,41 +81,34 @@ def find_row_by_document_positional(orig_df, doc_val):
     for col in candidate_cols:
         series = orig_df[col].astype(str).apply(lambda x: str(x).strip())
 
-        # 0) exact raw match (text)
+        # exact raw match
         mask = series == target_raw
         if mask.any():
             return orig_df.loc[mask].iloc[0]
 
-        # 0.5) match treating target as int-like string (e.g., "7568367.0")
+        # int-like match
         if as_int:
             mask_int = series == as_int
             if mask_int.any():
                 return orig_df.loc[mask_int].iloc[0]
 
-        # 1) digits-only match
+        # digits-only match
         if target_digits:
             s_digits = series.apply(lambda x: re.sub(r"\D", "", x))
             if (s_digits == target_digits).any():
                 return orig_df.loc[s_digits == target_digits].iloc[0]
-
-            # 2) zfill attempts
             for L in (8, 9, 11):
                 if len(target_digits) <= L:
                     tz = target_digits.zfill(L)
                     if (s_digits == tz).any():
                         return orig_df.loc[s_digits == tz].iloc[0]
-
-            # 3) compare removing leading zeros on source
             s_nozeros = s_digits.apply(lambda x: x.lstrip("0"))
             if (s_nozeros == target_digits.lstrip("0")).any():
                 return orig_df.loc[s_nozeros == target_digits.lstrip("0")].iloc[0]
-
-        # 4) If target is short, try substring match (last N chars) to handle truncated displays
-        if target_digits and len(target_digits) >= 4:
-            s_digits = series.apply(lambda x: re.sub(r"\D", "", x))
-            tail_mask = s_digits.str.endswith(target_digits)
-            if tail_mask.any():
-                return orig_df.loc[tail_mask].iloc[0]
+            if len(target_digits) >= 4:
+                tail_mask = s_digits.str.endswith(target_digits)
+                if tail_mask.any():
+                    return orig_df.loc[tail_mask].iloc[0]
 
     return None
 
@@ -165,20 +155,23 @@ def post_to_endpoint(excel_bytes: bytes) -> tuple[int, str]:
 def rech_post_handler(df: pd.DataFrame, ui_feedback_callable=None) -> tuple[bool, str]:
     if list(df.columns) != OUT_COLS:
         msg = f"Encabezados inválidos. Se requieren: {OUT_COLS}"
-        if ui_feedback_callable: ui_feedback_callable("error", msg)
+        if ui_feedback_callable:
+            ui_feedback_callable("error", msg)
         return False, msg
     payload = df[SUBSET_COLS]
     try:
         excel_bytes = df_to_excel_bytes(payload)
     except Exception as e:
         msg = f"Error generando Excel: {e}"
-        if ui_feedback_callable: ui_feedback_callable("error", msg)
+        if ui_feedback_callable:
+            ui_feedback_callable("error", msg)
         return False, msg
     try:
         status, resp_text = post_to_endpoint(excel_bytes)
     except Exception as e:
         msg = f"Error realizando POST: {e}"
-        if ui_feedback_callable: ui_feedback_callable("error", msg)
+        if ui_feedback_callable:
+            ui_feedback_callable("error", msg)
         return False, msg
     msg = f"{status}: {resp_text}"
     if ui_feedback_callable:
@@ -199,7 +192,7 @@ with col_cb:
 
 THRESHOLD_FIXED = 30000
 
-# Acumuladores (estructura original)
+# Acumuladores
 matches_report = []
 duplicates_report = []
 threshold_report = []
@@ -214,10 +207,9 @@ if uploaded_files:
             df = pd.read_excel(file, header=0, dtype=str)
             df.columns = [str(col) for col in df.columns]
 
-            # Guardar el dataframe original para mapeos posteriores
             originals.append(df.copy())
 
-            # Lista Negra
+            # LISTA NEGRA (mismo criterio previo)
             if lista_negra_input:
                 criteria = [normalize_text(x) for x in lista_negra_input.split(",") if x.strip() != ""]
                 if criteria:
@@ -234,7 +226,7 @@ if uploaded_files:
                 matches["Archivo"] = file.name
                 matches_report.append(matches)
 
-            # Duplicados: coincidencia completa en C, D, (I opcional), M, R, S
+            # DUPLICADOS (posicional)
             dup_letters = ["C", "D", "M", "R", "S"]
             if include_ref:
                 dup_letters.insert(2, "I")
@@ -257,7 +249,7 @@ if uploaded_files:
                     dups_report["Columnas comprobadas"] = ",".join(dup_letters)
                     duplicates_report.append(dups_report)
 
-            # Importes mayores a 30,000 (umbral fijo)
+            # IMPORTES MAYORES A 30,000
             col_M = get_col_by_letter("M", df)
             if col_M is None:
                 error_log.append(f"❌ Columna M no encontrada en {file.name}")
@@ -283,7 +275,7 @@ if uploaded_files:
                 except Exception as e:
                     error_log.append(f"❌ Error procesando importes en {file.name}: {e}")
 
-            # Documentos errados: validación B -> C (DNI 8, CEX 9, RUC 11) (posicional)
+            # DOCUMENTOS ERRADOS (posicional B -> C)
             col_B = get_col_by_letter("B", df)
             col_C = get_col_by_letter("C", df)
             if col_B is None or col_C is None:
@@ -292,7 +284,6 @@ if uploaded_files:
                 try:
                     tipos = df[col_B].astype(str).apply(lambda x: safe_str_preserve(x).strip().upper())
                     numeros = df[col_C].astype(str).apply(lambda x: safe_str_preserve(x).strip())
-
                     def validate_pair(tipo, valor_raw):
                         if valor_raw == "" or valor_raw.lower() in {"nan", "none"}:
                             if tipo in {"DNI", "CEX", "RUC"}:
@@ -313,7 +304,6 @@ if uploaded_files:
                                 return "RUC inválido"
                             return None
                         return None
-
                     errors_series = [validate_pair(t, n) for t, n in zip(tipos, numeros)]
                     report_df = pd.DataFrame({
                         "TipoDocumento": tipos.values,
@@ -330,25 +320,170 @@ if uploaded_files:
         except Exception as e:
             error_log.append(f"❌ Error procesando {file.name}: {e}")
 
-# ---------- Renderizado de secciones: solo mostrar subtítulos si hay datos ----------
+# ---------- Renderizado de secciones ----------
+# LISTA NEGRA: preview + botones (R002 / CUENTA INVALIDA)
 if matches_report:
     matches_df = pd.concat(matches_report, ignore_index=True)
     st.subheader("Lista Negra")
     st.dataframe(matches_df)
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-        matches_df.to_excel(writer, index=False, sheet_name="lista_negra")
-    st.download_button("⬇️ Descargar Lista Negra", data=buf.getvalue(), file_name="lista_negra.xlsx")
 
+    out_rows_ln = []
+    for _, r in matches_df.iterrows():
+        try:
+            dni = ""
+            nombre = ""
+            referencia = ""
+            importe_val = ""
+            if "DOCUMENTO" in r.index:
+                dni = safe_str_preserve(r["DOCUMENTO"])
+            elif "B" in r.index:
+                dni = safe_str_preserve(r["B"])
+            else:
+                try:
+                    dni = safe_str_preserve(r.iloc[1])
+                except Exception:
+                    dni = ""
+            if "NOMBRE" in r.index:
+                nombre = safe_str_preserve(r["NOMBRE"])
+            elif "D" in r.index:
+                nombre = safe_str_preserve(r["D"])
+            else:
+                try:
+                    nombre = safe_str_preserve(r.iloc[3])
+                except Exception:
+                    nombre = ""
+            if "REFERENCIA" in r.index:
+                referencia = safe_str_preserve(r["REFERENCIA"])
+            elif "I" in r.index:
+                referencia = safe_str_preserve(r["I"])
+            else:
+                try:
+                    referencia = safe_str_preserve(r.iloc[8])
+                except Exception:
+                    referencia = ""
+            if "MONTO" in r.index:
+                importe_val = parse_number(r["MONTO"])
+            elif "M" in r.index:
+                importe_val = parse_number(r["M"])
+            else:
+                try:
+                    importe_val = parse_number(r.iloc[12])
+                except Exception:
+                    importe_val = ""
+        except Exception:
+            dni = safe_str_preserve(r.get("Documento",""))
+            nombre = ""
+            referencia = ""
+            importe_val = ""
+        out_rows_ln.append({
+            "dni/cex": dni,
+            "nombre": nombre,
+            "importe": importe_val,
+            "Referencia": referencia,
+            "Estado": ESTADO,
+            "Codigo de Rechazo": "R002",
+            "Descripcion de Rechazo": "CUENTA INVALIDA",
+        })
+    df_out_ln = pd.DataFrame(out_rows_ln, columns=OUT_COLS)
+
+    st.markdown("**Preview (exactamente lo que se enviará al endpoint - Lista Negra)**")
+    st.dataframe(df_out_ln)
+
+    btn_ln_1, btn_ln_2 = st.columns([1,1])
+    with btn_ln_1:
+        if st.button("RECH-POSTMAN - Lista Negra"):
+            sent_ok, message = rech_post_handler(df_out_ln, ui_feedback_callable=lambda lvl, m: getattr(st, lvl)(m))
+            if sent_ok:
+                st.info("Envío completado correctamente.")
+            else:
+                st.error(f"Envío fallido: {message}")
+    with btn_ln_2:
+        excel_bytes = df_to_excel_bytes(df_out_ln)
+        st.download_button("⬇️ Descargar", data=excel_bytes, file_name="lista_negra_rechazos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# DUPLICADOS: preview + botones (R019 / ID DE TRANSACCIÓN DUPLICADA)
 if duplicates_report:
     dup_df = pd.concat(duplicates_report, ignore_index=True)
     st.subheader("Duplicados")
     st.dataframe(dup_df)
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-        dup_df.to_excel(writer, index=False, sheet_name="duplicados")
-    st.download_button("⬇️ Descargar Duplicados", data=buf.getvalue(), file_name="duplicados.xlsx")
 
+    # Construir df_out_dup mapeando desde las filas duplicadas
+    out_rows_dup = []
+    for _, r in dup_df.iterrows():
+        try:
+            dni = ""
+            nombre = ""
+            referencia = ""
+            importe_val = ""
+            # extraer por posición/encabezado similar a Lista Negra
+            if "DOCUMENTO" in r.index:
+                dni = safe_str_preserve(r["DOCUMENTO"])
+            elif "B" in r.index:
+                dni = safe_str_preserve(r["B"])
+            else:
+                try:
+                    dni = safe_str_preserve(r.iloc[1])
+                except Exception:
+                    dni = ""
+            if "NOMBRE" in r.index:
+                nombre = safe_str_preserve(r["NOMBRE"])
+            elif "D" in r.index:
+                nombre = safe_str_preserve(r["D"])
+            else:
+                try:
+                    nombre = safe_str_preserve(r.iloc[3])
+                except Exception:
+                    nombre = ""
+            if "REFERENCIA" in r.index:
+                referencia = safe_str_preserve(r["REFERENCIA"])
+            elif "I" in r.index:
+                referencia = safe_str_preserve(r["I"])
+            else:
+                try:
+                    referencia = safe_str_preserve(r.iloc[8])
+                except Exception:
+                    referencia = ""
+            if "MONTO" in r.index:
+                importe_val = parse_number(r["MONTO"])
+            elif "M" in r.index:
+                importe_val = parse_number(r["M"])
+            else:
+                try:
+                    importe_val = parse_number(r.iloc[12])
+                except Exception:
+                    importe_val = ""
+        except Exception:
+            dni = safe_str_preserve(r.get("Documento",""))
+            nombre = ""
+            referencia = ""
+            importe_val = ""
+        out_rows_dup.append({
+            "dni/cex": dni,
+            "nombre": nombre,
+            "importe": importe_val,
+            "Referencia": referencia,
+            "Estado": ESTADO,
+            "Codigo de Rechazo": "R019",
+            "Descripcion de Rechazo": "ID DE TRANSACCIÓN DUPLICADA",
+        })
+    df_out_dup = pd.DataFrame(out_rows_dup, columns=OUT_COLS)
+
+    st.markdown("**Preview (exactamente lo que se enviará al endpoint - Duplicados)**")
+    st.dataframe(df_out_dup)
+
+    btn_dup_1, btn_dup_2 = st.columns([1,1])
+    with btn_dup_1:
+        if st.button("RECH-POSTMAN - Duplicados"):
+            sent_ok, message = rech_post_handler(df_out_dup, ui_feedback_callable=lambda lvl, m: getattr(st, lvl)(m))
+            if sent_ok:
+                st.info("Envío completado correctamente.")
+            else:
+                st.error(f"Envío fallido: {message}")
+    with btn_dup_2:
+        excel_bytes = df_to_excel_bytes(df_out_dup)
+        st.download_button("⬇️ Descargar", data=excel_bytes, file_name="duplicados_rechazos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# IMPORTES MAYORES A 30,000
 if threshold_report:
     th_df = pd.concat(threshold_report, ignore_index=True)
     st.subheader("Importes mayores a 30,000")
@@ -358,7 +493,7 @@ if threshold_report:
         th_df.to_excel(writer, index=False, sheet_name="importes_mayores")
     st.download_button("⬇️ Descargar importes", data=buf.getvalue(), file_name="importes_mayores.xlsx")
 
-# Documentos errados + preview + 2 botones (RECH-POSTMAN and Descargar)
+# DOCUMENTOS ERRADOS (preview + botones; mapea desde originals por Documento)
 if validation_report:
     val_df = pd.concat(validation_report, ignore_index=True)
     st.subheader("Documentos errados")
@@ -373,7 +508,6 @@ if validation_report:
         for orig_df in originals:
             candidate = find_row_by_document_positional(orig_df, doc_val)
             if candidate is not None:
-                # extraer por posición: B->dni/cex, D->nombre, I->Referencia, M->importe
                 colB = get_col_by_letter("B", orig_df)
                 colD = get_col_by_letter("D", orig_df)
                 colI = get_col_by_letter("I", orig_df)
@@ -408,15 +542,13 @@ if validation_report:
 
     df_out = pd.DataFrame(out_rows, columns=OUT_COLS)
 
-    # Mostrar advertencias si hubo documentos no mapeados
     if unmapped_docs:
         st.warning(f"No se pudo mapear Referencia/nombre/importe para {len(unmapped_docs)} documento(s). Ejemplos: {unmapped_docs[:5]}")
 
-    # Preview siempre visible: exacto df_out (lo que se enviará)
     st.markdown("**Preview (exactamente lo que se enviará al endpoint)**")
     st.dataframe(df_out)
 
-    # Botones: enviar (RECH-POSTMAN) y descargar (solo SUBSET_COLS en xlsx)
+    # Botones: enviar (RECH-POSTMAN) y descargar (descarga exactamente preview)
     btn1, btn2 = st.columns([1, 1])
     with btn1:
         if st.button("RECH-POSTMAN"):
@@ -426,11 +558,10 @@ if validation_report:
             else:
                 st.error(f"Envío fallido: {message}")
     with btn2:
-        payload_df = df_out[SUBSET_COLS]
-        excel_bytes = df_to_excel_bytes(payload_df)
+        excel_bytes = df_to_excel_bytes(df_out)
         st.download_button("⬇️ Descargar", data=excel_bytes, file_name="documentos_errados_rechazos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# Error de archivo (solo si hay mensajes)
+# ERROR DE ARCHIVO
 if error_log:
     st.subheader("Error de archivo")
     for err in error_log:
