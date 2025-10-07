@@ -50,6 +50,42 @@ def get_col_by_letter(letter, df):
     except:
         return None
 
+def normalize_doc_for_match(s: str) -> str:
+    s = "" if pd.isna(s) else str(s).strip()
+    digits = re.sub(r"\D", "", s)
+    return digits
+
+def find_row_by_document_positional(orig_df, doc_val):
+    """
+    Busca la primera fila en orig_df cuya columna B (posicional) coincida con doc_val
+    aplicando normalizaciones sucesivas. Devuelve la Series de la fila o None.
+    """
+    col_B = get_col_by_letter("B", orig_df)
+    if col_B is None:
+        return None
+
+    target_raw = "" if pd.isna(doc_val) else str(doc_val).strip()
+    # 1) exact match on raw text
+    series = orig_df[col_B].astype(str).apply(lambda x: str(x).strip())
+    mask = series == target_raw
+    if mask.any():
+        return orig_df.loc[mask].iloc[0]
+
+    # 2) digits-only match
+    target_digits = normalize_doc_for_match(target_raw)
+    if target_digits:
+        s_digits = series.apply(lambda x: re.sub(r"\D", "", str(x)))
+        mask2 = s_digits == target_digits
+        if mask2.any():
+            return orig_df.loc[mask2].iloc[0]
+        # 3) try zfill to common lengths
+        for L in (8, 9, 11):
+            if len(target_digits) <= L:
+                target_z = target_digits.zfill(L)
+                if (s_digits == target_z).any():
+                    return orig_df.loc[s_digits == target_z].iloc[0]
+    return None
+
 # ---------- Constantes RECH ----------
 ENDPOINT = "https://q6caqnpy09.execute-api.us-east-1.amazonaws.com/OPS/kpayout/v1/payout_process/reject_invoices_batch"
 
@@ -132,6 +168,7 @@ matches_report = []
 duplicates_report = []
 threshold_report = []
 validation_report = []  # list of DataFrames (report_df)
+originals = []  # lista de DataFrames originales leídos (mantener en paralelo)
 error_log = []
 
 # ---------- Procesamiento de archivos si hay uploads ----------
@@ -140,6 +177,9 @@ if uploaded_files:
         try:
             df = pd.read_excel(file, header=0, dtype=str)
             df.columns = [str(col) for col in df.columns]
+
+            # Guardar el dataframe original para mapeos posteriores
+            originals.append(df.copy())
 
             # Lista Negra
             if lista_negra_input:
@@ -158,7 +198,7 @@ if uploaded_files:
                 matches["Archivo"] = file.name
                 matches_report.append(matches)
 
-            # Duplicados (posicional)
+            # Duplicados: coincidencia completa en C, D, (I opcional), M, R, S
             dup_letters = ["C", "D", "M", "R", "S"]
             if include_ref:
                 dup_letters.insert(2, "I")
@@ -181,7 +221,7 @@ if uploaded_files:
                     dups_report["Columnas comprobadas"] = ",".join(dup_letters)
                     duplicates_report.append(dups_report)
 
-            # Importes mayores a 30,000 (posicional)
+            # Importes mayores a 30,000 (umbral fijo)
             col_M = get_col_by_letter("M", df)
             if col_M is None:
                 error_log.append(f"❌ Columna M no encontrada en {file.name}")
@@ -207,7 +247,7 @@ if uploaded_files:
                 except Exception as e:
                     error_log.append(f"❌ Error procesando importes en {file.name}: {e}")
 
-            # Documentos errados: validación posicional B -> C
+            # Documentos errados: validación B -> C (DNI 8, CEX 9, RUC 11) (posicional)
             col_B = get_col_by_letter("B", df)
             col_C = get_col_by_letter("C", df)
             if col_B is None or col_C is None:
@@ -288,23 +328,59 @@ if validation_report:
     st.subheader("Documentos errados")
     st.dataframe(val_df)
 
-    # Construir df_out directamente desde val_df (Documento -> dni/cex; Error -> Descripcion)
-    df_out = pd.DataFrame(columns=OUT_COLS)
-    for _, r in val_df.iterrows():
-        row = {
-            "dni/cex": r.get("Documento", ""),
-            "nombre": "",
-            "importe": "",
-            "Referencia": "",
-            "Estado": ESTADO,
-            "Codigo de Rechazo": "R001",
-            "Descripcion de Rechazo": r.get("Error", "")
-        }
-        df_out = pd.concat([df_out, pd.DataFrame([row])], ignore_index=True)
+    # Construir df_out mapeando desde los originales por columna B posicional
+    out_rows = []
+    unmapped_docs = []
+    for _, err_row in val_df.iterrows():
+        doc_val = err_row.get("Documento", "")
+        mapped = False
+        for orig_df in originals:
+            candidate = find_row_by_document_positional(orig_df, doc_val)
+            if candidate is not None:
+                # extraer por posición: B->dni/cex, D->nombre, I->Referencia, M->importe
+                colB = get_col_by_letter("B", orig_df)
+                colD = get_col_by_letter("D", orig_df)
+                colI = get_col_by_letter("I", orig_df)
+                colM = get_col_by_letter("M", orig_df)
+                dni = safe_str_preserve(candidate[colB]) if colB else ""
+                nombre = safe_str_preserve(candidate[colD]) if colD else ""
+                referencia = safe_str_preserve(candidate[colI]) if colI else ""
+                monto_num = parse_number(candidate[colM]) if colM else ""
+                importe_val = monto_num if (monto_num is not None and not (isinstance(monto_num, float) and np.isnan(monto_num))) else ""
+                out_rows.append({
+                    "dni/cex": dni,
+                    "nombre": nombre,
+                    "importe": importe_val,
+                    "Referencia": referencia,
+                    "Estado": ESTADO,
+                    "Codigo de Rechazo": "R001",
+                    "Descripcion de Rechazo": "DOCUMENTO ERRADO",
+                })
+                mapped = True
+                break
+        if not mapped:
+            unmapped_docs.append(doc_val)
+            out_rows.append({
+                "dni/cex": doc_val,
+                "nombre": "",
+                "importe": "",
+                "Referencia": "",
+                "Estado": ESTADO,
+                "Codigo de Rechazo": "R001",
+                "Descripcion de Rechazo": "DOCUMENTO ERRADO",
+            })
 
+    df_out = pd.DataFrame(out_rows, columns=OUT_COLS)
+
+    # Mostrar advertencias si hubo documentos no mapeados
+    if unmapped_docs:
+        st.warning(f"No se pudo mapear Referencia/nombre/importe para {len(unmapped_docs)} documento(s). Ejemplos: {unmapped_docs[:5]}")
+
+    # Preview siempre visible: exacto df_out (lo que se enviará)
     st.markdown("**Preview (exactamente lo que se enviará al endpoint)**")
     st.dataframe(df_out)
 
+    # Botones: enviar (RECH-POSTMAN) y descargar (solo SUBSET_COLS en xlsx)
     btn1, btn2 = st.columns([1, 1])
     with btn1:
         if st.button("RECH-POSTMAN"):
@@ -318,6 +394,7 @@ if validation_report:
         excel_bytes = df_to_excel_bytes(payload_df)
         st.download_button("⬇️ Descargar", data=excel_bytes, file_name="documentos_errados_rechazos.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+# Error de archivo (solo si hay mensajes)
 if error_log:
     st.subheader("Error de archivo")
     for err in error_log:
