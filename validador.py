@@ -240,7 +240,7 @@ def process_uploaded_files(files: List[Any], lista_negra_input: str, include_ref
             if lista_negra_input:
                 criteria = [normalize_text(x) for x in lista_negra_input.split(",") if x.strip()]
                 if criteria:
-                    norm = df.applymap(normalize_text)
+                    norm = df.map(normalize_text)
                     mask = False
                     for c in criteria:
                         mask = mask | norm.isin([c])
@@ -268,7 +268,7 @@ def process_uploaded_files(files: List[Any], lista_negra_input: str, include_ref
             if missing_dup:
                 error_log.append(f"Columnas duplicados faltantes {missing_dup} en {file.name}")
             else:
-                subset = df[dup_cols].fillna("").astype(str).applymap(lambda x: x.strip())
+                subset = df[dup_cols].fillna("").astype(str).map(lambda x: x.strip())
                 dup_mask = subset.duplicated(keep=False)
                 if dup_mask.any():
                     dups = df.loc[dup_mask].copy()
