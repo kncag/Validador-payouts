@@ -1,4 +1,3 @@
-# validador_typed_numero_documento.py
 from __future__ import annotations
 import re
 import io
@@ -240,6 +239,7 @@ def process_uploaded_files(files: List[Any], lista_negra_input: str, include_ref
             if lista_negra_input:
                 criteria = [normalize_text(x) for x in lista_negra_input.split(",") if x.strip()]
                 if criteria:
+                    # CORRECCIÓN 1: applymap() -> map()
                     norm = df.map(normalize_text)
                     mask = False
                     for c in criteria:
@@ -268,6 +268,7 @@ def process_uploaded_files(files: List[Any], lista_negra_input: str, include_ref
             if missing_dup:
                 error_log.append(f"Columnas duplicados faltantes {missing_dup} en {file.name}")
             else:
+                # CORRECCIÓN 2: applymap() -> map()
                 subset = df[dup_cols].fillna("").astype(str).map(lambda x: x.strip())
                 dup_mask = subset.duplicated(keep=False)
                 if dup_mask.any():
@@ -347,7 +348,16 @@ def main():
     # uploader en su propia fila con badge
     st.subheader("Subir archivos")
     st.markdown("Arrastra o selecciona archivos Excel (.xlsx).")
-    uploaded_files = st.file_uploader("", type=["xlsx"], accept_multiple_files=True, key="main_uploader")
+    
+    # CORRECCIÓN 3: st.file_uploader con label_visibility="collapsed"
+    uploaded_files = st.file_uploader(
+        label="Cargar archivos Excel", 
+        type=["xlsx"], 
+        accept_multiple_files=True, 
+        key="main_uploader",
+        label_visibility="collapsed"
+    )
+    
     uploaded_count = len(uploaded_files) if uploaded_files else 0
     st.metric(label="Archivos cargados", value=str(uploaded_count))
 
